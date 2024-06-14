@@ -15,13 +15,13 @@ def get_training_data():
     padded = np.pad(x_train, [(0, 0), (1, 1), (1, 1)])
     print(padded.shape)
     _, m, n = x_train.shape
-    for di in [0]:
-        for dj in [0]:
+    for di in [-1, 0, 1]:
+        for dj in [-1, 0, 1]:
             cropped = padded[:, 1 + di : m + 1 + di, 1 + dj : n + 1 + dj]
             x_trains.append(cropped)
             x_trains.append(cropped[:, ::-1])
     x_train = np.concatenate(x_trains, axis=0)
-    y_train = np.concatenate([y_train] * 2, axis=0)
+    y_train = np.concatenate([y_train] * 18, axis=0)
 
     # Scale images to the [0, 1] range
     x_train = x_train.astype("float32") / 255
@@ -44,14 +44,16 @@ def build_model():
     return keras.Sequential(
         [
             keras.Input(shape=input_shape),
-            layers.Conv2D(32, kernel_size=(3, 3), use_bias=False),
+            layers.Conv2D(32, kernel_size=(3, 3), activation='relu'),
+            layers.Conv2D(32, kernel_size=(3, 3)),
+            layers.MaxPooling2D(pool_size=(2, 2)),
             layers.BatchNormalization(),
             layers.Activation('relu'),
+            layers.Conv2D(64, kernel_size=(3, 3), activation='relu'),
+            layers.Conv2D(64, kernel_size=(3, 3)),
             layers.MaxPooling2D(pool_size=(2, 2)),
-            layers.Conv2D(64, kernel_size=(3, 3), use_bias=False),
             layers.BatchNormalization(),
             layers.Activation('relu'),
-            layers.MaxPooling2D(pool_size=(2, 2)),
             layers.Flatten(),
             layers.Dropout(0.5),
             layers.Dense(num_classes, activation="softmax"),
@@ -66,11 +68,7 @@ def test_optimizer(optimizer):
     print(model.summary())
 
     batch_size = 128
-    epochs = 30
-
-    # opt = SGDScheduleFree(learning_rate=0.3, momentum=0.9)  # 0.2279
-    # Works up to learning rate 1.0 although performance falls off a bit
-    # opt = optimizers.SGD(learning_rate=0.005, momentum=0.9)  # 0.2797
+    epochs = 5
 
     model.compile(
         loss="categorical_crossentropy", optimizer=optimizer, metrics=["accuracy"]
@@ -83,6 +81,6 @@ def test_optimizer(optimizer):
 
 if __name__ == '__main__':
     test_optimizer(
-        AdamScheduleFree(learning_rate=0.03, warmup_steps=1600, amsgrad=True)
+        AdamScheduleFree(learning_rate=0.03, warmup_steps=1000, amsgrad=True)
     )
-    test_optimizer(SGDScheduleFree(learning_rate=0.3, warmup_steps=1600))
+    test_optimizer(SGDScheduleFree(learning_rate=0.3, warmup_steps=1000))
