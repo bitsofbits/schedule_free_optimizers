@@ -44,12 +44,10 @@ def build_model():
     return keras.Sequential(
         [
             keras.Input(shape=input_shape),
-            layers.Conv2D(32, kernel_size=(3, 3), activation='relu'),
             layers.Conv2D(32, kernel_size=(3, 3)),
             layers.MaxPooling2D(pool_size=(2, 2)),
             layers.BatchNormalization(),
             layers.Activation('relu'),
-            layers.Conv2D(64, kernel_size=(3, 3), activation='relu'),
             layers.Conv2D(64, kernel_size=(3, 3)),
             layers.MaxPooling2D(pool_size=(2, 2)),
             layers.BatchNormalization(),
@@ -75,7 +73,11 @@ def test_optimizer(optimizer):
     )
 
     model.fit(
-        x_train, y_train, batch_size=batch_size, epochs=epochs, validation_split=0.1
+        x_train,
+        y_train,
+        batch_size=batch_size,
+        epochs=epochs,
+        validation_data=(x_test, y_test),
     )
 
 

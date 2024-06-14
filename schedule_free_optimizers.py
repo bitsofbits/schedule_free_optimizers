@@ -15,7 +15,7 @@
 from typing import Optional
 
 import tensorflow as tf
-from keras import optimizers
+from tensorflow.keras import optimizers
 
 
 class BaseScheduleFree(optimizers.Optimizer):
