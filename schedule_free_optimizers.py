@@ -61,7 +61,10 @@ class BaseScheduleFree(optimizers.Optimizer):
 
 
 class SGDScheduleFree(BaseScheduleFree):
-    """Schedule Free Adam Optimizer
+    """Schedule Free SGD Optimizer
+
+    This is a naive implementation of the the Schedule Free SGD optimizer from
+    [The Road Less Scheduled](https://doi.org/10.48550/arXiv.2405.15682).
 
     Args:
       learning_rate: How much to scale normalized gradient before adding to `x`.
@@ -160,12 +163,15 @@ class SGDScheduleFree(BaseScheduleFree):
 class AdamScheduleFree(BaseScheduleFree):
     """Schedule Free Adam Optimizer
 
+    This is a naive implementation of the the Schedule Free Adam optimizer from
+    [The Road Less Scheduled](https://doi.org/10.48550/arXiv.2405.15682).
+
     Args:
       learning_rate: How much to scale normalized gradient before adding to `x`.
       beta_1: Functions similar to Adam's beta_1 although implementation is different.
       beta_2: How long to remember the RMS gradient values in (0, 1), 1 = forever.
       epsilon: Added to denominator to prevent division by zero.
-      amsgrad: Use maximum v_t rather than current v_t.
+      amsgrad: Apply AMSGrad; that is, use maximum v_t rather than current v_t.
       warmup_steps: Ramp up learning rate to final value over this many steps.
 
     Other args are passed onto Optimizer, so see the Keras docks for
