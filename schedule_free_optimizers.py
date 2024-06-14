@@ -23,7 +23,7 @@ class BaseScheduleFree(optimizers.Optimizer):
 
     @staticmethod
     def _step_dense(*, x, y, z, gradient, c, beta, gamma):
-        y.assign((1 - beta) * z + beta * x)
+        y.assign(beta * x + (1 - beta) * z)
         z.assign_sub(gamma * gradient)
         x.assign((1 - c) * x + c * z)
 
@@ -61,20 +61,32 @@ class BaseScheduleFree(optimizers.Optimizer):
 
 
 class SGDScheduleFree(BaseScheduleFree):
+    """Schedule Free Adam Optimizer
+
+    Args:
+      learning_rate: How much to scale normalized gradient before adding to `x`.
+      momentum: Functions similar to SGD momentum although implementation is different.
+      warmup_steps: Ramp up learning rate to final value over this many steps.
+
+    Other args are passed onto Optimizer, so see the Keras docks for
+    their definition.
+
+    """
+
     def __init__(
         self,
-        learning_rate=0.1,
-        momentum=0.9,
-        warmup_steps=0,
-        weight_decay=0.004,
-        clipnorm=None,
-        clipvalue=None,
-        global_clipnorm=None,
-        use_ema=False,
-        ema_momentum=0.99,
-        ema_overwrite_frequency=None,
-        jit_compile=True,
-        name="SGDScheduleFree",
+        learning_rate: float = 0.1,
+        momentum: float = 0.9,
+        warmup_steps: int = 0,
+        weight_decay: float = 0.004,
+        clipnorm: Optional[float] = None,
+        clipvalue: Optional[float] = None,
+        global_clipnorm: Optional[float] = None,
+        use_ema: bool = False,
+        ema_momentum: float = 0.99,
+        ema_overwrite_frequency: int = None,
+        jit_compile: bool = True,
+        name: str = "SGDScheduleFree",
         **kwargs
     ):
         super().__init__(
@@ -98,11 +110,8 @@ class SGDScheduleFree(BaseScheduleFree):
         self.warmup_steps = warmup_steps  # >= 0
 
     def build(self, var_list):
-        """Initialize optimizer variables.
+        """Initialize optimizer variables"""
 
-        Args:
-          var_list: list of model variables to build SGD variables on.
-        """
         super().build(var_list)
         if hasattr(self, "_built") and self._built:
             return
@@ -119,7 +128,7 @@ class SGDScheduleFree(BaseScheduleFree):
         self._built = True
 
     def update_step(self, gradient, y):
-        """Update step given gradient and the associated model variable."""
+        """Update variable given gradient"""
         gamma = tf.cast(self.learning_rate, y.dtype)
         beta = tf.cast(self.momentum, y.dtype)
         var_index = self._index_dict[self._var_key(y)]
@@ -149,6 +158,21 @@ class SGDScheduleFree(BaseScheduleFree):
 
 
 class AdamScheduleFree(BaseScheduleFree):
+    """Schedule Free Adam Optimizer
+
+    Args:
+      learning_rate: How much to scale normalized gradient before adding to `x`.
+      beta_1: Functions similar to Adam's beta_1 although implementation is different.
+      beta_2: How long to remember the RMS gradient values in (0, 1), 1 = forever.
+      epsilon: Added to denominator to prevent division by zero.
+      amsgrad: Use maximum v_t rather than current v_t.
+      warmup_steps: Ramp up learning rate to final value over this many steps.
+
+    Other args are passed onto Optimizer, so see the Keras docks for
+    their definition.
+
+    """
+
     def __init__(
         self,
         learning_rate: float = 0.1,
@@ -194,11 +218,7 @@ class AdamScheduleFree(BaseScheduleFree):
         self.amsgrad = amsgrad
 
     def build(self, var_list):
-        """Initialize optimizer variables.
-
-        Args:
-          var_list: list of model variables to build SGD variables on.
-        """
+        """Initialize optimizer variables"""
         super().build(var_list)
         if hasattr(self, "_built") and self._built:
             return
@@ -221,7 +241,7 @@ class AdamScheduleFree(BaseScheduleFree):
         self._built = True
 
     def update_step(self, gradient, y):
-        """Update step given gradient and the associated model variable."""
+        """Update variable given gradient"""
         beta_1 = tf.cast(self.beta_1, y.dtype)
         beta_2 = tf.cast(self.beta_2, y.dtype)
         var_index = self._index_dict[self._var_key(y)]
