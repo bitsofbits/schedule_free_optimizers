@@ -22,26 +22,25 @@ class BaseScheduleFree(optimizers.Optimizer):
     weight_gamma_exponent = 2.0
 
     @staticmethod
-    def _step_dense(*, x, y, z, gradient, c, beta, gamma):
+    def _step_dense(*, x, y, z, gradient, c, beta, gamma, lambda_):
         y.assign(beta * x + (1 - beta) * z)
-        z.assign_sub(gamma * gradient)
+        z.assign(z - gamma * gradient - gamma * lambda_ * y)
         x.assign((1 - c) * x + c * z)
 
-    def _compute_gamma_and_c(self, gamma, var_index):
-        dtype = gamma.dtype
+    def _compute_schedule_and_c(self, y):
+        var_index = self._index_dict[self._var_key(y)]
+        dtype = y.dtype
         kp1 = tf.cast(self.iterations + 1, dtype)
         warmup_steps = tf.cast(self.warmup_steps, dtype)
         n = tf.minimum(kp1, warmup_steps)
         sched = n / warmup_steps
 
-        gamma = gamma * sched
-
-        weight = gamma**self.weight_gamma_exponent
+        weight = sched**self.weight_gamma_exponent
         weight_sum = self.weight_sum[var_index]
         weight_sum.assign_add(weight)
         c = weight / weight_sum
 
-        return gamma, c
+        return sched, c
 
     def build(self, var_list):
         super().build(var_list)
@@ -54,9 +53,7 @@ class BaseScheduleFree(optimizers.Optimizer):
     def get_config(self):
         config = super().get_config()
         config.update(
-            {
-                'warmup_steps': self.warmup_steps,
-            }
+            {'warmup_steps': self.warmup_steps, "weight_decay": self.sf_weight_decay}
         )
 
 
@@ -81,7 +78,7 @@ class SGDScheduleFree(BaseScheduleFree):
         learning_rate: float = 0.1,
         momentum: float = 0.9,
         warmup_steps: int = 0,
-        weight_decay: float = 0.004,
+        weight_decay: float = 0.0,
         clipnorm: Optional[float] = None,
         clipvalue: Optional[float] = None,
         global_clipnorm: Optional[float] = None,
@@ -94,7 +91,6 @@ class SGDScheduleFree(BaseScheduleFree):
     ):
         super().__init__(
             name=name,
-            weight_decay=weight_decay,
             clipnorm=clipnorm,
             clipvalue=clipvalue,
             global_clipnorm=global_clipnorm,
@@ -109,6 +105,7 @@ class SGDScheduleFree(BaseScheduleFree):
             raise ValueError('`momentum` must be between [0, 1].')
 
         self._learning_rate = self._build_learning_rate(learning_rate)
+        self.sf_weight_decay = weight_decay
         self.momentum = momentum
         self.warmup_steps = warmup_steps  # >= 0
 
@@ -132,20 +129,28 @@ class SGDScheduleFree(BaseScheduleFree):
 
     def update_step(self, gradient, y):
         """Update variable given gradient"""
-        gamma = tf.cast(self.learning_rate, y.dtype)
+        schedule, c = self._compute_schedule_and_c(y)
+
+        gamma = schedule * tf.cast(self.learning_rate, y.dtype)
         beta = tf.cast(self.momentum, y.dtype)
+        lambda_ = tf.cast(self.sf_weight_decay, y.dtype)
         var_index = self._index_dict[self._var_key(y)]
         z_t = self.z_t[var_index]
         x_t = self.x_t[var_index]
-
-        gamma, c = self._compute_gamma_and_c(gamma, var_index)
 
         if isinstance(gradient, tf.IndexedSlices):
             # # Sparse gradients.
             raise NotImplementedError()
         else:
             self._step_dense(
-                x=x_t, y=y, z=z_t, gradient=gradient, c=c, beta=beta, gamma=gamma
+                x=x_t,
+                y=y,
+                z=z_t,
+                gradient=gradient,
+                c=c,
+                beta=beta,
+                gamma=gamma,
+                lambda_=lambda_,
             )
 
     def get_config(self):
@@ -187,7 +192,7 @@ class AdamScheduleFree(BaseScheduleFree):
         epsilon: float = 1e-7,
         amsgrad: bool = False,
         warmup_steps: int = 0,
-        weight_decay: Optional[float] = None,
+        weight_decay: float = 0.0,
         clipnorm: Optional[float] = None,
         clipvalue: Optional[float] = None,
         global_clipnorm: Optional[float] = None,
@@ -200,7 +205,6 @@ class AdamScheduleFree(BaseScheduleFree):
     ):
         super().__init__(
             name=name,
-            weight_decay=weight_decay,
             clipnorm=clipnorm,
             clipvalue=clipvalue,
             global_clipnorm=global_clipnorm,
@@ -222,6 +226,7 @@ class AdamScheduleFree(BaseScheduleFree):
         self.epsilon = epsilon
         self.warmup_steps = warmup_steps
         self.amsgrad = amsgrad
+        self.sf_weight_decay = weight_decay
 
     def build(self, var_list):
         """Initialize optimizer variables"""
@@ -248,18 +253,20 @@ class AdamScheduleFree(BaseScheduleFree):
 
     def update_step(self, gradient, y):
         """Update variable given gradient"""
+        schedule, c = self._compute_schedule_and_c(y)
+
         beta_1 = tf.cast(self.beta_1, y.dtype)
         beta_2 = tf.cast(self.beta_2, y.dtype)
+        gamma = schedule * tf.cast(self.learning_rate, y.dtype)
+        lambda_ = tf.cast(self.sf_weight_decay, y.dtype)
+
         var_index = self._index_dict[self._var_key(y)]
         x_t = self.x_t[var_index]
         z_t = self.z_t[var_index]
         v_t = self.v_t[var_index]
 
         kp1 = tf.cast(self.iterations + 1, y.dtype)
-        gamma = tf.cast(self.learning_rate, y.dtype)
-
         bias_correction = tf.math.sqrt(1 - beta_2**kp1)
-        gamma, c = self._compute_gamma_and_c(gamma * bias_correction, var_index)
 
         if isinstance(gradient, tf.IndexedSlices):
             # # Sparse gradients.
@@ -271,9 +278,16 @@ class AdamScheduleFree(BaseScheduleFree):
                 v_hat = self.v_hat[var_index]
                 v_t = tf.maximum(v_t, v_hat)
                 v_hat.assign(v_t)
-            normed = gradient / (tf.math.sqrt(v_t) + self.epsilon)
+            grad_n = gradient * bias_correction / (tf.math.sqrt(v_t) + self.epsilon)
             self._step_dense(
-                x=x_t, y=y, z=z_t, gradient=normed, c=c, beta=beta_1, gamma=gamma
+                x=x_t,
+                y=y,
+                z=z_t,
+                gradient=grad_n,
+                c=c,
+                beta=beta_1,
+                gamma=gamma,
+                lambda_=lambda_,
             )
 
     def get_config(self):
