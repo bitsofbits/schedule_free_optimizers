@@ -13,8 +13,8 @@ training losses at 10 epochs:
 
 |  Optimizer  |    Keras    | Schedule Free |
 | -----------:|:-----------:|--------------:|
-|         SGD |     0.231   |     0.207     |
-|        Adam |     0.315   |     0.177     |
+|         SGD |     0.231   |     0.209     |
+|        Adam |     0.315   |     0.175     |
 
 These are run with the same parameters between the Keras and Schedule
 Free versions. Note that setting warmup_steps to, e.g., 1000, can
