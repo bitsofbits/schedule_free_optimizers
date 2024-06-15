@@ -19,28 +19,29 @@ from tensorflow.keras import optimizers
 
 
 class BaseScheduleFree(optimizers.Optimizer):
-    weight_gamma_exponent = 2.0
+    schedule_weight_exponent = 2.0
 
     @staticmethod
-    def _step_dense(*, x, y, z, gradient, c, beta, gamma, lambda_):
-        y.assign(beta * x + (1 - beta) * z)
-        z.assign(z - gamma * gradient - gamma * lambda_ * y)
-        x.assign((1 - c) * x + c * z)
+    def _step_dense(*, y, z, gradient, c, beta, gamma, lambda_):
+        # y = beta * x + (1 - beta) * z =>
+        beta_x = y - (1 - beta) * z
+        z.assign_sub(gamma * (gradient + lambda_ * y))
+        beta_x = (1 - c) * beta_x + c * beta * z
+        y.assign(beta_x + (1 - beta) * z)
 
     def _compute_schedule_and_c(self, y):
         var_index = self._index_dict[self._var_key(y)]
         dtype = y.dtype
-        kp1 = tf.cast(self.iterations + 1, dtype)
-        warmup_steps = tf.cast(self.warmup_steps, dtype)
-        n = tf.minimum(kp1, warmup_steps)
-        sched = n / warmup_steps
+        k_plus_1 = tf.cast(self.iterations + 1, dtype)
+        steps_plus_1 = tf.cast(self.warmup_steps + 1, dtype)
+        schedule = tf.minimum(k_plus_1, steps_plus_1) / steps_plus_1
 
-        weight = sched**self.weight_gamma_exponent
+        weight = schedule**self.schedule_weight_exponent
         weight_sum = self.weight_sum[var_index]
         weight_sum.assign_add(weight)
         c = weight / weight_sum
 
-        return sched, c
+        return schedule, c
 
     def build(self, var_list):
         super().build(var_list)
@@ -116,14 +117,10 @@ class SGDScheduleFree(BaseScheduleFree):
         if hasattr(self, "_built") and self._built:
             return
         self.z_t = []
-        self.x_t = []
         add_var = self.add_variable_from_reference
         for var in var_list:
             self.z_t.append(
                 add_var(model_variable=var, variable_name="z_t", initial_value=var)
-            )
-            self.x_t.append(
-                add_var(model_variable=var, variable_name="x_t", initial_value=var)
             )
         self._built = True
 
@@ -136,14 +133,12 @@ class SGDScheduleFree(BaseScheduleFree):
         lambda_ = tf.cast(self.sf_weight_decay, y.dtype)
         var_index = self._index_dict[self._var_key(y)]
         z_t = self.z_t[var_index]
-        x_t = self.x_t[var_index]
 
         if isinstance(gradient, tf.IndexedSlices):
             # # Sparse gradients.
             raise NotImplementedError()
         else:
             self._step_dense(
-                x=x_t,
                 y=y,
                 z=z_t,
                 gradient=gradient,
@@ -233,16 +228,12 @@ class AdamScheduleFree(BaseScheduleFree):
         super().build(var_list)
         if hasattr(self, "_built") and self._built:
             return
-        self.x_t = []
         self.z_t = []
         self.v_t = []
         if self.amsgrad:
             self.v_hat = []
         add_var = self.add_variable_from_reference
         for var in var_list:
-            self.x_t.append(
-                add_var(model_variable=var, variable_name="x_t", initial_value=var)
-            )
             self.z_t.append(
                 add_var(model_variable=var, variable_name="z_t", initial_value=var)
             )
@@ -261,7 +252,6 @@ class AdamScheduleFree(BaseScheduleFree):
         lambda_ = tf.cast(self.sf_weight_decay, y.dtype)
 
         var_index = self._index_dict[self._var_key(y)]
-        x_t = self.x_t[var_index]
         z_t = self.z_t[var_index]
         v_t = self.v_t[var_index]
 
@@ -280,7 +270,6 @@ class AdamScheduleFree(BaseScheduleFree):
                 v_hat.assign(v_t)
             grad_n = gradient * bias_correction / (tf.math.sqrt(v_t) + self.epsilon)
             self._step_dense(
-                x=x_t,
                 y=y,
                 z=z_t,
                 gradient=grad_n,
