@@ -8,9 +8,14 @@ the [repository](https://github.com/facebookresearch/schedule_free/tree/main)
 for the paper.
 
 The examples in `fashion_mnist_examples.py` produce the following
-training losses at 5 epochs:
+training losses at 10 epochs:
 
 | Optimizer   |    Keras    | Schedule Free |
 | ---:        |    :----:   |     ---:      |
-| SGD         |     0.255   |     0.222     |
-| Adam        |     0.238   |     0.187     |
+| SGD         |     0.231   |     0.210     |
+| Adam        |     0.315   |     0.164     |
+
+These are run with the same parameters between the Keras and Schedule
+Free versions except that schedule free use a 1000 step warmup. The
+schedule free example does give a significant training improvement over
+the Keras version.
