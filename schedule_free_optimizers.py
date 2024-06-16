@@ -33,8 +33,8 @@ class BaseScheduleFree(optimizers.Optimizer):
         var_index = self._index_dict[self._var_key(y)]
         dtype = y.dtype
         k_plus_1 = tf.cast(self.iterations + 1, dtype)
-        steps_plus_1 = tf.cast(self.warmup_steps + 1, dtype)
-        schedule = tf.minimum(k_plus_1, steps_plus_1) / steps_plus_1
+        warmup_steps_plus_1 = tf.cast(self.warmup_steps + 1, dtype)
+        schedule = tf.minimum(k_plus_1, warmup_steps_plus_1) / warmup_steps_plus_1
 
         weight = schedule**self.schedule_weight_exponent
         weight_sum = self.weight_sum[var_index]
