@@ -21,8 +21,7 @@ from tensorflow.keras import optimizers
 class BaseScheduleFree(optimizers.Optimizer):
     schedule_weight_exponent = 2.0
 
-    @staticmethod
-    def _step_dense(*, y, z, gradient, c, beta, gamma, lambda_):
+    def _step_dense(self, *, y, z, gradient, c, beta, gamma, lambda_):
         # y = beta * x + (1 - beta) * z =>
         beta_x = y - (1 - beta) * z
         z.assign_sub(gamma * (gradient + lambda_ * y))
@@ -54,7 +53,10 @@ class BaseScheduleFree(optimizers.Optimizer):
     def get_config(self):
         config = super().get_config()
         config.update(
-            {'warmup_steps': self.warmup_steps, "weight_decay": self.sf_weight_decay}
+            {
+                'warmup_steps': self.warmup_steps,
+                'weight_decay': self.sf_weight_decay,
+            }
         )
 
 
@@ -171,7 +173,6 @@ class AdamScheduleFree(BaseScheduleFree):
       beta_1: Functions similar to Adam's beta_1 although implementation is different.
       beta_2: How long to remember the RMS gradient values in (0, 1), 1 = forever.
       epsilon: Added to denominator to prevent division by zero.
-      amsgrad: Apply AMSGrad; that is, use maximum v_t rather than current v_t.
       warmup_steps: Ramp up learning rate to final value over this many steps.
 
     Other args are passed onto Optimizer, so see the Keras docks for
@@ -185,7 +186,6 @@ class AdamScheduleFree(BaseScheduleFree):
         beta_1: float = 0.9,
         beta_2: float = 0.999,
         epsilon: float = 1e-7,
-        amsgrad: bool = False,
         warmup_steps: int = 0,
         weight_decay: float = 0.0,
         clipnorm: Optional[float] = None,
@@ -220,7 +220,6 @@ class AdamScheduleFree(BaseScheduleFree):
         self.beta_2 = beta_2
         self.epsilon = epsilon
         self.warmup_steps = warmup_steps
-        self.amsgrad = amsgrad
         self.sf_weight_decay = weight_decay
 
     def build(self, var_list):
@@ -230,16 +229,12 @@ class AdamScheduleFree(BaseScheduleFree):
             return
         self.z_t = []
         self.v_t = []
-        if self.amsgrad:
-            self.v_hat = []
         add_var = self.add_variable_from_reference
         for var in var_list:
             self.z_t.append(
                 add_var(model_variable=var, variable_name="z_t", initial_value=var)
             )
             self.v_t.append(add_var(model_variable=var, variable_name="v_t"))
-            if self.amsgrad:
-                self.v_hat.append(add_var(model_variable=var, variable_name="v_hat"))
         self._built = True
 
     def update_step(self, gradient, y):
@@ -256,7 +251,7 @@ class AdamScheduleFree(BaseScheduleFree):
         v_t = self.v_t[var_index]
 
         kp1 = tf.cast(self.iterations + 1, y.dtype)
-        bias_correction = tf.math.sqrt(1 - beta_2**kp1)
+        bias_correction_2 = 1 - beta_2**kp1
 
         if isinstance(gradient, tf.IndexedSlices):
             # # Sparse gradients.
@@ -264,15 +259,13 @@ class AdamScheduleFree(BaseScheduleFree):
         else:
             # Dense gradients
             v_t.assign(beta_2 * v_t + (1 - beta_2) * gradient**2)
-            if self.amsgrad:
-                v_hat = self.v_hat[var_index]
-                v_t = tf.maximum(v_t, v_hat)
-                v_hat.assign(v_t)
-            grad_n = gradient * bias_correction / (tf.math.sqrt(v_t) + self.epsilon)
+            normalized_gradient = gradient / (
+                tf.math.sqrt(v_t / bias_correction_2) + self.epsilon
+            )
             self._step_dense(
                 y=y,
                 z=z_t,
-                gradient=grad_n,
+                gradient=normalized_gradient,
                 c=c,
                 beta=beta_1,
                 gamma=gamma,
@@ -288,7 +281,6 @@ class AdamScheduleFree(BaseScheduleFree):
                 "beta_1": self.beta_1,
                 "beta_2": self.beta_2,
                 "epsilon": self.epsilon,
-                "amsgrad": self.amsgrad,
             }
         )
         return config
