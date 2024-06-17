@@ -11,12 +11,10 @@ paper.
 The examples in `fashion_mnist_examples.py` produce the following
 training losses at 10 epochs:
 
-N.B.: These need to be fully updated
-
 |  Optimizer  | Keras Train Loss | SF Train Loss| Keras Test Accuracy | SF Test Accuracy |
 | -----------:|:----------------:|:------------:|:-------------------:|:----------------:|
-|         SGD |       0.282      |     0.182    |        0.866        |     0.927       |
-|        Adam |       0.234      |     0.168    |        0.918        |     0.928       |       
+|         SGD |       0.282      |     0.182    |        0.897        |     0.927       |
+|        Adam |       0.359      |     0.168    |        0.894        |     0.928       |       
 
 These are run with the same parameters between the Keras and Schedule
 Free versions. Note that setting warmup_steps to, e.g., 1000, can
