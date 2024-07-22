@@ -1,4 +1,5 @@
 import numpy as np
+import tensorflow as tf
 from keras import layers
 from schedule_free_optimizers import AdamScheduleFree, SGDScheduleFree
 from tensorflow import keras
@@ -44,14 +45,17 @@ def build_model():
     return keras.Sequential(
         [
             keras.Input(shape=input_shape),
-            layers.Conv2D(32, kernel_size=(3, 3), activation='relu'),
-            layers.Conv2D(32, kernel_size=(3, 3)),
+            layers.Conv2D(
+                32, kernel_size=(3, 3), activation='relu', name='c11_wdexclude'
+            ),
+            layers.Conv2D(32, kernel_size=(3, 3), name='c12_wdexclude'),
             layers.MaxPooling2D(pool_size=(2, 2)),
             layers.BatchNormalization(),
             layers.Activation('relu'),
-            layers.Conv2D(64, kernel_size=(3, 3), activation='relu'),
-            layers.Conv2D(64, kernel_size=(3, 3)),
-            layers.MaxPooling2D(pool_size=(2, 2)),
+            layers.Conv2D(
+                64, kernel_size=(3, 3), activation='relu', name='c21_wdexclude'
+            ),
+            layers.Conv2D(64, kernel_size=(3, 3), name='c22_wdexclude'),
             layers.BatchNormalization(),
             layers.Activation('relu'),
             layers.Flatten(),
@@ -62,6 +66,8 @@ def build_model():
 
 
 def test_optimizer(optimizer):
+    optimizer.exclude_from_weight_decay(var_names=['_wdexclude'])
+
     x_train, y_train, x_test, y_test = get_training_data()
 
     model = build_model()
@@ -87,8 +93,12 @@ if __name__ == '__main__':
     print('Keras Adam')
     test_optimizer(keras.optimizers.Adam(learning_rate=0.03, weight_decay=0.004))
     print('Schedule Free Adam')
-    test_optimizer(AdamScheduleFree(learning_rate=0.03, weight_decay=0.004))
+    test_optimizer(
+        AdamScheduleFree(learning_rate=0.03, weight_decay=0.004, warmup_steps=1000)
+    )
     print("Keras SGD")
     test_optimizer(keras.optimizers.SGD(learning_rate=0.1, weight_decay=0.004))
     print("Schedule Free SGD")
-    test_optimizer(SGDScheduleFree(learning_rate=0.1, weight_decay=0.004))
+    test_optimizer(
+        SGDScheduleFree(learning_rate=0.1, weight_decay=0.004, warmup_steps=1000)
+    )

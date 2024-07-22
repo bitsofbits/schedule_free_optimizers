@@ -13,10 +13,9 @@ training losses at 10 epochs:
 
 |  Optimizer  | Keras Train Loss | SF Train Loss| Keras Test Accuracy | SF Test Accuracy |
 | -----------:|:----------------:|:------------:|:-------------------:|:----------------:|
-|         SGD |       0.282      |     0.182    |        0.897        |     0.927       |
-|        Adam |       0.359      |     0.168    |        0.894        |     0.928       |       
+|         SGD |       0.182      |     0.165    |        0.918        |     0.928       |
+|        Adam |       0.216      |     0.127    |        0.909        |     0.932       |       
 
 These are run with the same parameters between the Keras and Schedule
-Free versions. Note that setting warmup_steps to, e.g., 1000, can
-improve the Schedule Free versions performance, but was omitted to make
-the runs comparable.
+Free versions except that the Schedule Free have warmup_steps=1000. In all cases the best
+training loss and test accuracy were recorded.

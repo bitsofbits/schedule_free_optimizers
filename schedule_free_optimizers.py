@@ -42,6 +42,12 @@ class BaseScheduleFree(optimizers.Optimizer):
 
         return schedule, c
 
+    def get_weight_decay(self, y):
+        if self._use_weight_decay(y):
+            return tf.cast(self.sf_weight_decay, y.dtype)
+        else:
+            return 0.0
+
     def build(self, var_list):
         super().build(var_list)
         if hasattr(self, "_built") and self._built:
@@ -132,7 +138,7 @@ class SGDScheduleFree(BaseScheduleFree):
 
         gamma = schedule * tf.cast(self.learning_rate, y.dtype)
         beta = tf.cast(self.momentum, y.dtype)
-        lambda_ = tf.cast(self.sf_weight_decay, y.dtype)
+        lambda_ = self.get_weight_decay(y)
         var_index = self._index_dict[self._var_key(y)]
         z_t = self.z_t[var_index]
 
@@ -244,7 +250,7 @@ class AdamScheduleFree(BaseScheduleFree):
         beta_1 = tf.cast(self.beta_1, y.dtype)
         beta_2 = tf.cast(self.beta_2, y.dtype)
         gamma = schedule * tf.cast(self.learning_rate, y.dtype)
-        lambda_ = tf.cast(self.sf_weight_decay, y.dtype)
+        lambda_ = self.get_weight_decay(y)
 
         var_index = self._index_dict[self._var_key(y)]
         z_t = self.z_t[var_index]
