@@ -1,5 +1,4 @@
 import numpy as np
-import tensorflow as tf
 from keras import layers
 from schedule_free_optimizers import AdamScheduleFree, SGDScheduleFree
 from tensorflow import keras
@@ -93,12 +92,8 @@ if __name__ == '__main__':
     print('Keras Adam')
     test_optimizer(keras.optimizers.Adam(learning_rate=0.03, weight_decay=0.004))
     print('Schedule Free Adam')
-    test_optimizer(
-        AdamScheduleFree(learning_rate=0.03, weight_decay=0.004, warmup_steps=1000)
-    )
+    test_optimizer(AdamScheduleFree(learning_rate=0.03, weight_decay=0.004))
     print("Keras SGD")
     test_optimizer(keras.optimizers.SGD(learning_rate=0.1, weight_decay=0.004))
     print("Schedule Free SGD")
-    test_optimizer(
-        SGDScheduleFree(learning_rate=0.1, weight_decay=0.004, warmup_steps=1000)
-    )
+    test_optimizer(SGDScheduleFree(learning_rate=0.1, weight_decay=0.00))

@@ -21,10 +21,58 @@ from tensorflow.keras import optimizers
 class BaseScheduleFree(optimizers.Optimizer):
     schedule_weight_exponent = 2.0
 
+    def __init__(
+        self,
+        learning_rate: float = 0.1,
+        momentum: float = 0.9,
+        warmup_steps: int = 0,
+        weight_decay: float = 0.0,
+        clipnorm: Optional[float] = None,
+        clipvalue: Optional[float] = None,
+        global_clipnorm: Optional[float] = None,
+        use_ema: bool = False,
+        ema_momentum: float = 0.99,
+        ema_overwrite_frequency: int = None,
+        jit_compile: bool = True,
+        decay: str = 'x_at_y',
+        name: str = "SGDScheduleFree",
+        **kwargs,
+    ):
+        super().__init__(
+            name=name,
+            clipnorm=clipnorm,
+            clipvalue=clipvalue,
+            global_clipnorm=global_clipnorm,
+            use_ema=use_ema,
+            ema_momentum=ema_momentum,
+            ema_overwrite_frequency=ema_overwrite_frequency,
+            jit_compile=jit_compile,
+            weight_decay=0.0,
+            **kwargs,
+        )
+        self.sf_weight_decay = weight_decay
+        self.warmup_steps = warmup_steps
+        self.decay = decay
+
     def _step_dense(self, *, y, z, gradient, c, beta, gamma, lambda_):
         # y = beta * x + (1 - beta) * z =>
         beta_x = y - (1 - beta) * z
-        z.assign_sub(gamma * (gradient + lambda_ * y))
+
+        if self.decay == 'z_at_y':
+            # Default approach suggested in the paper because "equivalent to L2"
+            z.assign_sub(gamma * lambda_ * y)
+        elif self.decay == 'z_at_z':
+            # Alternative approach mentioned in paper
+            z.assign_sub(gamma * lambda_ * z)
+        elif self.decay == 'x_at_y':
+            # Seems closer to spirit of AdamW where you decay just the weights.
+            # Better? ¯\_(ツ)_/¯ Performs better for fashion MNIST example with
+            # SGD and very slightly better with Adam
+            beta_x -= gamma * lambda_ * y
+        else:
+            raise ValueError(f'unknown value for `decay_at`: "{self.decay_at}"')
+
+        z.assign_sub(gamma * gradient)
         beta_x = (1 - c) * beta_x + c * beta * z
         y.assign(beta_x + (1 - beta) * z)
 
@@ -62,6 +110,7 @@ class BaseScheduleFree(optimizers.Optimizer):
             {
                 'warmup_steps': self.warmup_steps,
                 'weight_decay': self.sf_weight_decay,
+                'decay_at': self.decay_at,
             }
         )
 
@@ -96,7 +145,7 @@ class SGDScheduleFree(BaseScheduleFree):
         ema_overwrite_frequency: int = None,
         jit_compile: bool = True,
         name: str = "SGDScheduleFree",
-        **kwargs
+        **kwargs,
     ):
         super().__init__(
             name=name,
@@ -107,16 +156,16 @@ class SGDScheduleFree(BaseScheduleFree):
             ema_momentum=ema_momentum,
             ema_overwrite_frequency=ema_overwrite_frequency,
             jit_compile=jit_compile,
-            **kwargs
+            warmup_steps=warmup_steps,
+            weight_decay=weight_decay,
+            **kwargs,
         )
 
         if isinstance(momentum, (int, float)) and not 0 <= momentum <= 1:
             raise ValueError('`momentum` must be between [0, 1].')
 
         self._learning_rate = self._build_learning_rate(learning_rate)
-        self.sf_weight_decay = weight_decay
         self.momentum = momentum
-        self.warmup_steps = warmup_steps  # >= 0
 
     def build(self, var_list):
         """Initialize optimizer variables"""
@@ -202,7 +251,7 @@ class AdamScheduleFree(BaseScheduleFree):
         ema_overwrite_frequency: Optional[int] = None,
         jit_compile: bool = True,
         name: str = "AdamScheduleFree",
-        **kwargs
+        **kwargs,
     ):
         super().__init__(
             name=name,
@@ -213,7 +262,8 @@ class AdamScheduleFree(BaseScheduleFree):
             ema_momentum=ema_momentum,
             ema_overwrite_frequency=ema_overwrite_frequency,
             jit_compile=jit_compile,
-            **kwargs
+            weight_decay=weight_decay,
+            **kwargs,
         )
 
         if isinstance(beta_2, (int, float)) and not 0 <= beta_2 <= 1:
@@ -225,8 +275,6 @@ class AdamScheduleFree(BaseScheduleFree):
         self.beta_1 = beta_1
         self.beta_2 = beta_2
         self.epsilon = epsilon
-        self.warmup_steps = warmup_steps
-        self.sf_weight_decay = weight_decay
 
     def build(self, var_list):
         """Initialize optimizer variables"""
