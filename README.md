@@ -16,13 +16,20 @@ constructor.
 The examples in `fashion_mnist_examples.py` produce the following
 training losses at 10 epochs:
 
-|  Optimizer  | Keras Train Loss | SF Train Loss| Keras Test Accuracy | SF Test Accuracy |
-| -----------:|:----------------:|:------------:|:-------------------:|:----------------:|
-|         SGD |       0.182      |     0.147    |        0.920        |      0.932       |
-|        Adam |       0.318      |     0.145    |        0.894        |      0.930       |       
+|  Optimizer   |    Train Loss    | Test Accuracy |
+|-------------:|:----------------:|:---------_---:|
+|          SGD |       0.249      |     0.909     |
+|         Adam |       0.300      |     0.907     |
+|       SF-SGD |       0.122      |     0.930     |
+|      SF-Adam |       0.115      |     0.931     |   
+| SF-Half-Adam |       0.086      |     0.935     |
 
 These are run with the same parameters between the Keras and Schedule
-Free versions. In all cases the best training loss and test accuracy
-were recorded.  Adding warmup  to the schedule free versions further
-improves the performance (e.g., `warmup_steps=1000` increases the test
-accuracy 0.932 and 0.933 for SGD and Adam respectively)
+Free versions except that the schedule free versions had warmup steps
+equal to about 1 epoch (10000). In all cases the best training loss and
+test accuracy were recorded, the best accuracy usually occurred before the
+end of training because this model has a tendency to overfit.
+
+Half-Adam uses the schedule free version of Adam, with alpha set to 0.5.
+Alpha interpolates between SGD and Adam, and this version fits deeper
+in this case.

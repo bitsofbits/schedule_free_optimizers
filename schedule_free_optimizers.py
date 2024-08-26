@@ -32,10 +32,10 @@ class BaseScheduleFree(optimizers.Optimizer):
         global_clipnorm: Optional[float] = None,
         use_ema: bool = False,
         ema_momentum: float = 0.99,
-        ema_overwrite_frequency: int = None,
+        ema_overwrite_frequency: Optional[int] = None,
         jit_compile: bool = True,
         decay: str = 'x_at_y',
-        name: str = "SGDScheduleFree",
+        name: str = 'SGDScheduleFree',
         **kwargs,
     ):
         super().__init__(
@@ -74,7 +74,7 @@ class BaseScheduleFree(optimizers.Optimizer):
 
         z.assign_sub(gamma * gradient)
         beta_x = (1 - c) * beta_x + c * beta * z
-        y.assign(beta_x + (1 - beta) * z)
+        y.assign(beta_x + (1 - c * beta) * z)
 
     def _compute_schedule_and_c(self, y):
         var_index = self._index_dict[self._var_key(y)]
@@ -98,7 +98,7 @@ class BaseScheduleFree(optimizers.Optimizer):
 
     def build(self, var_list):
         super().build(var_list)
-        if hasattr(self, "_built") and self._built:
+        if hasattr(self, '_built') and self._built:
             return
         self.weight_sum = []
         for var in var_list:
@@ -142,9 +142,9 @@ class SGDScheduleFree(BaseScheduleFree):
         global_clipnorm: Optional[float] = None,
         use_ema: bool = False,
         ema_momentum: float = 0.99,
-        ema_overwrite_frequency: int = None,
+        ema_overwrite_frequency: Optional[int] = None,
         jit_compile: bool = True,
-        name: str = "SGDScheduleFree",
+        name: str = 'SGDScheduleFree',
         **kwargs,
     ):
         super().__init__(
@@ -171,13 +171,13 @@ class SGDScheduleFree(BaseScheduleFree):
         """Initialize optimizer variables"""
 
         super().build(var_list)
-        if hasattr(self, "_built") and self._built:
+        if hasattr(self, '_built') and self._built:
             return
         self.z_t = []
         add_var = self.add_variable_from_reference
         for var in var_list:
             self.z_t.append(
-                add_var(model_variable=var, variable_name="z_t", initial_value=var)
+                add_var(model_variable=var, variable_name='z_t', initial_value=var)
             )
         self._built = True
 
@@ -210,8 +210,8 @@ class SGDScheduleFree(BaseScheduleFree):
 
         config.update(
             {
-                "learning_rate": self._serialize_hyperparameter(self._learning_rate),
-                "momentum": self.momentum,
+                'learning_rate': self._serialize_hyperparameter(self._learning_rate),
+                'momentum': self.momentum,
             }
         )
         return config
@@ -225,10 +225,17 @@ class AdamScheduleFree(BaseScheduleFree):
 
     Args:
       learning_rate: How much to scale normalized gradient before adding to `x`.
+      alpha: Interpolates between Adam (1) and SGD (0)
       beta_1: Functions similar to Adam's beta_1 although implementation is different.
       beta_2: How long to remember the RMS gradient values in (0, 1), 1 = forever.
       epsilon: Added to denominator to prevent division by zero.
-      warmup_steps: Ramp up learning rate to final value over this many steps.
+      warmup_steps: Ramp up learning rate to final value over this many steps. We also
+        ramp up beta_2 over the same period[1].
+
+    [1] This makes early values of the gradient, where it is less stable, 
+        less influential on the normalization portion of Adam. This differs
+        from the paper, where only the learning rate is warmed up. 
+
 
     Other args are passed onto Optimizer, so see the Keras docks for
     their definition.
@@ -238,6 +245,7 @@ class AdamScheduleFree(BaseScheduleFree):
     def __init__(
         self,
         learning_rate: float = 0.1,
+        alpha: float = 1.0,
         beta_1: float = 0.9,
         beta_2: float = 0.999,
         epsilon: float = 1e-7,
@@ -250,7 +258,7 @@ class AdamScheduleFree(BaseScheduleFree):
         ema_momentum: float = 0.99,
         ema_overwrite_frequency: Optional[int] = None,
         jit_compile: bool = True,
-        name: str = "AdamScheduleFree",
+        name: str = 'AdamScheduleFree',
         **kwargs,
     ):
         super().__init__(
@@ -263,32 +271,39 @@ class AdamScheduleFree(BaseScheduleFree):
             ema_overwrite_frequency=ema_overwrite_frequency,
             jit_compile=jit_compile,
             weight_decay=weight_decay,
+            warmup_steps=warmup_steps,
             **kwargs,
         )
 
         if isinstance(beta_2, (int, float)) and not 0 <= beta_2 <= 1:
-            raise ValueError("`beta_2` must be between [0, 1].")
+            raise ValueError('`beta_2` must be between [0, 1].')
         if isinstance(beta_2, (int, float)) and not 0 <= beta_2 <= 1:
-            raise ValueError("`beta_2` must be between [0, 1].")
+            raise ValueError('`beta_2` must be between [0, 1].')
 
         self._learning_rate = self._build_learning_rate(learning_rate)
+        # Alpha interpolates between SGD (0) and Adam (1)
+        assert 0 < alpha <= 1
+        self.alpha = alpha
         self.beta_1 = beta_1
         self.beta_2 = beta_2
+
         self.epsilon = epsilon
 
     def build(self, var_list):
         """Initialize optimizer variables"""
         super().build(var_list)
-        if hasattr(self, "_built") and self._built:
+        if hasattr(self, '_built') and self._built:
             return
         self.z_t = []
         self.v_t = []
+        self.sum_t = []
         add_var = self.add_variable_from_reference
         for var in var_list:
             self.z_t.append(
-                add_var(model_variable=var, variable_name="z_t", initial_value=var)
+                add_var(model_variable=var, variable_name='z_t', initial_value=var)
             )
-            self.v_t.append(add_var(model_variable=var, variable_name="v_t"))
+            self.v_t.append(add_var(model_variable=var, variable_name='v_t'))
+            self.sum_t.append(self.add_variable((), dtype=var.dtype))
         self._built = True
 
     def update_step(self, gradient, y):
@@ -303,9 +318,10 @@ class AdamScheduleFree(BaseScheduleFree):
         var_index = self._index_dict[self._var_key(y)]
         z_t = self.z_t[var_index]
         v_t = self.v_t[var_index]
+        sum_t = self.sum_t[var_index]
 
-        kp1 = tf.cast(self.iterations + 1, y.dtype)
-        bias_correction_2 = 1 - beta_2**kp1
+        beta_2 = schedule * beta_2
+        sum_t.assign(beta_2 * sum_t + (1 - beta_2))
 
         if isinstance(gradient, tf.IndexedSlices):
             # # Sparse gradients.
@@ -313,9 +329,8 @@ class AdamScheduleFree(BaseScheduleFree):
         else:
             # Dense gradients
             v_t.assign(beta_2 * v_t + (1 - beta_2) * gradient**2)
-            normalized_gradient = gradient / (
-                tf.math.sqrt(v_t / bias_correction_2) + self.epsilon
-            )
+            sigma = tf.math.sqrt(v_t / sum_t + self.epsilon ** 2)
+            normalized_gradient = gradient / (sigma ** self.alpha)
             self._step_dense(
                 y=y,
                 z=z_t,
@@ -331,10 +346,11 @@ class AdamScheduleFree(BaseScheduleFree):
 
         config.update(
             {
-                "learning_rate": self._serialize_hyperparameter(self._learning_rate),
-                "beta_1": self.beta_1,
-                "beta_2": self.beta_2,
-                "epsilon": self.epsilon,
+                'learning_rate': self._serialize_hyperparameter(self._learning_rate),
+                'beta_1': self.beta_1,
+                'beta_2': self.beta_2,
+                'alpha': self.alpha,
+                'epsilon': self.epsilon,
             }
         )
         return config

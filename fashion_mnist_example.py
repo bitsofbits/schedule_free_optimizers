@@ -44,19 +44,22 @@ def build_model():
     return keras.Sequential(
         [
             keras.Input(shape=input_shape),
-            layers.Conv2D(
-                32, kernel_size=(3, 3), activation='relu', name='c11_wdexclude'
-            ),
-            layers.Conv2D(32, kernel_size=(3, 3), name='c12_wdexclude'),
-            layers.MaxPooling2D(pool_size=(2, 2)),
+            layers.Conv2D(16, kernel_size=3, activation='relu', padding='same'),
+            layers.Conv2D(32, kernel_size=3, padding='same'),
+            layers.MaxPooling2D(pool_size=2),
             layers.BatchNormalization(),
             layers.Activation('relu'),
-            layers.Conv2D(
-                64, kernel_size=(3, 3), activation='relu', name='c21_wdexclude'
-            ),
-            layers.Conv2D(64, kernel_size=(3, 3), name='c22_wdexclude'),
+            layers.Conv2D(32, kernel_size=3, activation='relu', padding='same'),
+            layers.Conv2D(64, kernel_size=3, padding='same'),
+            layers.MaxPooling2D(pool_size=2),
             layers.BatchNormalization(),
             layers.Activation('relu'),
+            layers.Conv2D(64, kernel_size=3, activation='relu', padding='same'),
+            layers.Conv2D(128, kernel_size=3, padding='same'),
+            layers.MaxPooling2D(pool_size=2),
+            layers.BatchNormalization(),
+            layers.Activation('relu'),
+            layers.DepthwiseConv2D(3, 3, activation='relu', depth_multiplier=2),
             layers.Flatten(),
             layers.Dropout(0.5),
             layers.Dense(num_classes, activation="softmax"),
@@ -89,11 +92,23 @@ def test_optimizer(optimizer):
 
 
 if __name__ == '__main__':
+    print('Schedule Free Adam')
+    test_optimizer(
+        AdamScheduleFree(
+            learning_rate=0.03, weight_decay=0.004, warmup_steps=10000
+        )
+    )
+    print('Schedule Free Adam, ⍺=0.5')
+    test_optimizer(
+        AdamScheduleFree(
+            learning_rate=0.03, weight_decay=0.004, warmup_steps=10000, alpha=0.5
+        )
+    )
     print('Keras Adam')
     test_optimizer(keras.optimizers.Adam(learning_rate=0.03, weight_decay=0.004))
-    print('Schedule Free Adam')
-    test_optimizer(AdamScheduleFree(learning_rate=0.03, weight_decay=0.004))
+    print("Schedule Free SGD")
+    test_optimizer(
+        SGDScheduleFree(learning_rate=0.1, weight_decay=0.00, warmup_steps=100000)
+    )
     print("Keras SGD")
     test_optimizer(keras.optimizers.SGD(learning_rate=0.1, weight_decay=0.004))
-    print("Schedule Free SGD")
-    test_optimizer(SGDScheduleFree(learning_rate=0.1, weight_decay=0.00))
