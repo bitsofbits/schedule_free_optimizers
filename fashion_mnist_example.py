@@ -108,7 +108,7 @@ if __name__ == '__main__':
     test_optimizer(keras.optimizers.Adam(learning_rate=0.03, weight_decay=0.004))
     print("Schedule Free SGD")
     test_optimizer(
-        SGDScheduleFree(learning_rate=0.1, weight_decay=0.00, warmup_steps=100000)
+        SGDScheduleFree(learning_rate=0.1, weight_decay=0.004, warmup_steps=100000)
     )
     print("Keras SGD")
     test_optimizer(keras.optimizers.SGD(learning_rate=0.1, weight_decay=0.004))

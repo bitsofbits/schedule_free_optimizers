@@ -74,7 +74,7 @@ class BaseScheduleFree(optimizers.Optimizer):
 
         z.assign_sub(gamma * gradient)
         beta_x = (1 - c) * beta_x + c * beta * z
-        y.assign(beta_x + (1 - c * beta) * z)
+        y.assign(beta_x + (1 - beta) * z)
 
     def _compute_schedule_and_c(self, y):
         var_index = self._index_dict[self._var_key(y)]
@@ -311,7 +311,7 @@ class AdamScheduleFree(BaseScheduleFree):
         schedule, c = self._compute_schedule_and_c(y)
 
         beta_1 = tf.cast(self.beta_1, y.dtype)
-        beta_2 = tf.cast(self.beta_2, y.dtype)
+        beta_2 = schedule * tf.cast(self.beta_2, y.dtype)
         gamma = schedule * tf.cast(self.learning_rate, y.dtype)
         lambda_ = self.get_weight_decay(y)
 
@@ -320,7 +320,6 @@ class AdamScheduleFree(BaseScheduleFree):
         v_t = self.v_t[var_index]
         sum_t = self.sum_t[var_index]
 
-        beta_2 = schedule * beta_2
         sum_t.assign(beta_2 * sum_t + (1 - beta_2))
 
         if isinstance(gradient, tf.IndexedSlices):
