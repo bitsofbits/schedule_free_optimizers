@@ -1,7 +1,8 @@
 import numpy as np
-from keras import layers
-from schedule_free_optimizers import AdamScheduleFree, SGDScheduleFree
-from tensorflow import keras
+import tf_keras as keras
+from schedule_free_optimizers import (AdamScheduleFree, BaseScheduleFree,
+                                      ScheduleFreeCallback, SGDScheduleFree)
+from tf_keras import layers
 
 num_classes = 10
 input_shape = (28, 28, 1)
@@ -12,16 +13,10 @@ def get_training_data():
     (x_train, y_train), (x_test, y_test) = keras.datasets.fashion_mnist.load_data()
 
     x_trains = []
-    padded = np.pad(x_train, [(0, 0), (1, 1), (1, 1)])
-    print(padded.shape)
-    _, m, n = x_train.shape
-    for di in [-1, 0, 1]:
-        for dj in [-1, 0, 1]:
-            cropped = padded[:, 1 + di : m + 1 + di, 1 + dj : n + 1 + dj]
-            x_trains.append(cropped)
-            x_trains.append(cropped[:, ::-1])
+    x_trains.append(x_train)
+    x_trains.append(x_train[:, ::-1])
     x_train = np.concatenate(x_trains, axis=0)
-    y_train = np.concatenate([y_train] * 18, axis=0)
+    y_train = np.concatenate([y_train] * 2, axis=0)
 
     # Scale images to the [0, 1] range
     x_train = x_train.astype("float32") / 255
@@ -40,24 +35,21 @@ def get_training_data():
     return x_train, y_train, x_test, y_test
 
 
-def build_model():
+def build_model(norm=layers.LayerNormalization):
     return keras.Sequential(
         [
             keras.Input(shape=input_shape),
-            layers.Conv2D(16, kernel_size=3, activation='relu', padding='same'),
             layers.Conv2D(32, kernel_size=3, padding='same'),
             layers.MaxPooling2D(pool_size=2),
-            layers.BatchNormalization(),
+            norm(),
             layers.Activation('relu'),
-            layers.Conv2D(32, kernel_size=3, activation='relu', padding='same'),
             layers.Conv2D(64, kernel_size=3, padding='same'),
             layers.MaxPooling2D(pool_size=2),
-            layers.BatchNormalization(),
+            norm(),
             layers.Activation('relu'),
-            layers.Conv2D(64, kernel_size=3, activation='relu', padding='same'),
             layers.Conv2D(128, kernel_size=3, padding='same'),
             layers.MaxPooling2D(pool_size=2),
-            layers.BatchNormalization(),
+            norm(),
             layers.Activation('relu'),
             layers.DepthwiseConv2D(3, 3, activation='relu', depth_multiplier=2),
             layers.Flatten(),
@@ -76,11 +68,16 @@ def test_optimizer(optimizer):
     print(model.summary())
 
     batch_size = 128
-    epochs = 10
+    epochs = 20
 
     model.compile(
         loss="categorical_crossentropy", optimizer=optimizer, metrics=["accuracy"]
     )
+
+    if isinstance(optimizer, BaseScheduleFree):
+        callbacks = [ScheduleFreeCallback()]
+    else:
+        callbacks = []
 
     model.fit(
         x_train,
@@ -88,27 +85,20 @@ def test_optimizer(optimizer):
         batch_size=batch_size,
         epochs=epochs,
         validation_data=(x_test, y_test),
+        callbacks=callbacks,
     )
 
 
 if __name__ == '__main__':
     print('Schedule Free Adam')
     test_optimizer(
-        AdamScheduleFree(
-            learning_rate=0.03, weight_decay=0.004, warmup_steps=10000
-        )
-    )
-    print('Schedule Free Adam, ⍺=0.5')
-    test_optimizer(
-        AdamScheduleFree(
-            learning_rate=0.03, weight_decay=0.004, warmup_steps=10000, alpha=0.5
-        )
+        AdamScheduleFree(learning_rate=0.01, weight_decay=0.004, warmup_steps=10000)
     )
     print('Keras Adam')
-    test_optimizer(keras.optimizers.Adam(learning_rate=0.03, weight_decay=0.004))
+    test_optimizer(keras.optimizers.Adam(learning_rate=0.01, weight_decay=0.004))
     print("Schedule Free SGD")
     test_optimizer(
-        SGDScheduleFree(learning_rate=0.1, weight_decay=0.004, warmup_steps=100000)
+        SGDScheduleFree(learning_rate=0.1, weight_decay=0.004, warmup_steps=10000)
     )
     print("Keras SGD")
     test_optimizer(keras.optimizers.SGD(learning_rate=0.1, weight_decay=0.004))

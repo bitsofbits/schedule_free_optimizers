@@ -15,7 +15,18 @@
 from typing import Optional
 
 import tensorflow as tf
-from tensorflow.keras import optimizers
+from tf_keras import callbacks, optimizers
+
+
+class ScheduleFreeCallback(callbacks.Callback):
+    def on_test_begin(self, logs=None):
+        self.orig_weights = self.model.optimizer.finalize_weights(self.model)
+
+    def on_test_end(self, logs=None):
+        self.model.optimizer.set_weights(self.orig_weights)
+
+    def on_train_end(self, logs=None):
+        self.orig_weights = self.model.optimizer.finalize_weights(self.model)
 
 
 class BaseScheduleFree(optimizers.Optimizer):
@@ -34,8 +45,8 @@ class BaseScheduleFree(optimizers.Optimizer):
         ema_momentum: float = 0.99,
         ema_overwrite_frequency: Optional[int] = None,
         jit_compile: bool = True,
-        decay: str = 'x_at_y',
-        name: str = 'SGDScheduleFree',
+        decay: str = 'z_at_y',
+        name: str = 'BaseScheduleFree',
         **kwargs,
     ):
         super().__init__(
@@ -54,6 +65,23 @@ class BaseScheduleFree(optimizers.Optimizer):
         self.warmup_steps = warmup_steps
         self.decay = decay
 
+    def finalize_weights(self, model):
+        old_weights = []
+        new_weights = []
+        for var in model.trainable_weights:
+            var_index = self._index_dict[self._var_key(var)]
+            z_t = self.z_t[var_index]
+            y = var.numpy()
+            beta_x = y - (1 - self.beta) * z_t
+            new_weights.append((var, beta_x / self.beta))
+            old_weights.append((var, y))
+        self.set_weights(new_weights)
+        return old_weights
+
+    def set_weights(self, new_weights):
+        for var, weights in new_weights:
+            var.assign(weights)
+
     def _step_dense(self, *, y, z, gradient, c, beta, gamma, lambda_):
         # y = beta * x + (1 - beta) * z =>
         beta_x = y - (1 - beta) * z
@@ -64,13 +92,8 @@ class BaseScheduleFree(optimizers.Optimizer):
         elif self.decay == 'z_at_z':
             # Alternative approach mentioned in paper
             z.assign_sub(gamma * lambda_ * z)
-        elif self.decay == 'x_at_y':
-            # Seems closer to spirit of AdamW where you decay just the weights.
-            # Better? ¯\_(ツ)_/¯ Performs better for fashion MNIST example with
-            # SGD and very slightly better with Adam
-            beta_x -= gamma * lambda_ * y
         else:
-            raise ValueError(f'unknown value for `decay_at`: "{self.decay_at}"')
+            raise ValueError(f'unknown value for `decay`: "{self.decay}"')
 
         z.assign_sub(gamma * gradient)
         beta_x = (1 - c) * beta_x + c * beta * z
@@ -110,7 +133,7 @@ class BaseScheduleFree(optimizers.Optimizer):
             {
                 'warmup_steps': self.warmup_steps,
                 'weight_decay': self.sf_weight_decay,
-                'decay_at': self.decay_at,
+                'decay': self.decay,
             }
         )
 
@@ -181,6 +204,10 @@ class SGDScheduleFree(BaseScheduleFree):
             )
         self._built = True
 
+    @property
+    def beta(self):
+        return self.momentum
+
     def update_step(self, gradient, y):
         """Update variable given gradient"""
         schedule, c = self._compute_schedule_and_c(y)
@@ -232,9 +259,9 @@ class AdamScheduleFree(BaseScheduleFree):
       warmup_steps: Ramp up learning rate to final value over this many steps. We also
         ramp up beta_2 over the same period[1].
 
-    [1] This makes early values of the gradient, where it is less stable, 
+    [1] This makes early values of the gradient, where it is less stable,
         less influential on the normalization portion of Adam. This differs
-        from the paper, where only the learning rate is warmed up. 
+        from the paper, where only the learning rate is warmed up.
 
 
     Other args are passed onto Optimizer, so see the Keras docks for
@@ -245,7 +272,6 @@ class AdamScheduleFree(BaseScheduleFree):
     def __init__(
         self,
         learning_rate: float = 0.1,
-        alpha: float = 1.0,
         beta_1: float = 0.9,
         beta_2: float = 0.999,
         epsilon: float = 1e-7,
@@ -281,9 +307,6 @@ class AdamScheduleFree(BaseScheduleFree):
             raise ValueError('`beta_2` must be between [0, 1].')
 
         self._learning_rate = self._build_learning_rate(learning_rate)
-        # Alpha interpolates between SGD (0) and Adam (1)
-        assert 0 < alpha <= 1
-        self.alpha = alpha
         self.beta_1 = beta_1
         self.beta_2 = beta_2
 
@@ -305,6 +328,10 @@ class AdamScheduleFree(BaseScheduleFree):
             self.v_t.append(add_var(model_variable=var, variable_name='v_t'))
             self.sum_t.append(self.add_variable((), dtype=var.dtype))
         self._built = True
+
+    @property
+    def beta(self):
+        return self.beta_1
 
     def update_step(self, gradient, y):
         """Update variable given gradient"""
@@ -328,8 +355,8 @@ class AdamScheduleFree(BaseScheduleFree):
         else:
             # Dense gradients
             v_t.assign(beta_2 * v_t + (1 - beta_2) * gradient**2)
-            sigma = tf.math.sqrt(v_t / sum_t + self.epsilon ** 2)
-            normalized_gradient = gradient / (sigma ** self.alpha)
+            sigma = tf.math.sqrt(v_t / sum_t + self.epsilon**2)
+            normalized_gradient = gradient / sigma
             self._step_dense(
                 y=y,
                 z=z_t,
@@ -348,7 +375,6 @@ class AdamScheduleFree(BaseScheduleFree):
                 'learning_rate': self._serialize_hyperparameter(self._learning_rate),
                 'beta_1': self.beta_1,
                 'beta_2': self.beta_2,
-                'alpha': self.alpha,
                 'epsilon': self.epsilon,
             }
         )
