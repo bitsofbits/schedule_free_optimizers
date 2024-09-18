@@ -69,11 +69,12 @@ class BaseScheduleFree(optimizers.Optimizer):
         old_weights = []
         new_weights = []
         for var in model.trainable_weights:
+            beta = self.get_beta()
             var_index = self._index_dict[self._var_key(var)]
             z_t = self.z_t[var_index]
             y = var.numpy()
-            beta_x = y - (1 - self.beta) * z_t
-            new_weights.append((var, beta_x / self.beta))
+            beta_x = y - (1 - beta) * z_t
+            new_weights.append((var, beta_x / beta))
             old_weights.append((var, y))
         self.set_weights(new_weights)
         return old_weights
@@ -82,8 +83,9 @@ class BaseScheduleFree(optimizers.Optimizer):
         for var, weights in new_weights:
             var.assign(weights)
 
-    def _step_dense(self, *, y, z, gradient, c, beta, gamma, lambda_):
+    def _step_dense(self, *, y, z, gradient, c, gamma, lambda_):
         # y = beta * x + (1 - beta) * z =>
+        beta = tf.cast(self.get_beta(), y.dtype)
         beta_x = y - (1 - beta) * z
 
         if self.decay == 'z_at_y':
@@ -204,8 +206,7 @@ class SGDScheduleFree(BaseScheduleFree):
             )
         self._built = True
 
-    @property
-    def beta(self):
+    def get_beta(self):
         return self.momentum
 
     def update_step(self, gradient, y):
@@ -213,7 +214,6 @@ class SGDScheduleFree(BaseScheduleFree):
         schedule, c = self._compute_schedule_and_c(y)
 
         gamma = schedule * tf.cast(self.learning_rate, y.dtype)
-        beta = tf.cast(self.momentum, y.dtype)
         lambda_ = self.get_weight_decay(y)
         var_index = self._index_dict[self._var_key(y)]
         z_t = self.z_t[var_index]
@@ -227,7 +227,6 @@ class SGDScheduleFree(BaseScheduleFree):
                 z=z_t,
                 gradient=gradient,
                 c=c,
-                beta=beta,
                 gamma=gamma,
                 lambda_=lambda_,
             )
@@ -329,15 +328,13 @@ class AdamScheduleFree(BaseScheduleFree):
             self.sum_t.append(self.add_variable((), dtype=var.dtype))
         self._built = True
 
-    @property
-    def beta(self):
+    def get_beta(self):
         return self.beta_1
 
     def update_step(self, gradient, y):
         """Update variable given gradient"""
         schedule, c = self._compute_schedule_and_c(y)
 
-        beta_1 = tf.cast(self.beta_1, y.dtype)
         beta_2 = schedule * tf.cast(self.beta_2, y.dtype)
         gamma = schedule * tf.cast(self.learning_rate, y.dtype)
         lambda_ = self.get_weight_decay(y)
@@ -362,7 +359,6 @@ class AdamScheduleFree(BaseScheduleFree):
                 z=z_t,
                 gradient=normalized_gradient,
                 c=c,
-                beta=beta_1,
                 gamma=gamma,
                 lambda_=lambda_,
             )
