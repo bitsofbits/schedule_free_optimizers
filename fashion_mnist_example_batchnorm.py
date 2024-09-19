@@ -33,11 +33,16 @@ def test_optimizer(optimizer):
     optimizer.finalize_weights(model)
     optimizer._learning_rate.assign(0.0)
 
+    # Momentum for Keras BatcNormalization defaults to 0.99, so should
+    # run for about 100 (1 / (1 - momentum)) batches to fix the
+    # statistics. This means that 1 epoch is plenty in this case.
+    batchnorm_fix_epochs = 1
+
     model.fit(
         x_train,
         y_train,
         batch_size=batch_size,
-        epochs=1,
+        epochs=batchnorm_fix_epochs,
         validation_data=(x_test, y_test),
     )
 
