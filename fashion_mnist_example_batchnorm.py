@@ -1,6 +1,6 @@
+import tf_keras
 from fashion_mnist_example import build_model, get_training_data
-from schedule_free_optimizers import (AdamScheduleFree, ScheduleFreeCallback,
-                                      SGDScheduleFree)
+from schedule_free_optimizers import AdamScheduleFree
 from tf_keras import layers
 
 num_classes = 10
@@ -10,9 +10,9 @@ input_shape = (28, 28, 1)
 def test_optimizer(optimizer):
     optimizer.exclude_from_weight_decay(var_names=['_wdexclude'])
 
-    x_train, y_train, x_test, y_test = get_training_data()
+    x_train, y_train, x_test, y_test = get_training_data(tf_keras)
 
-    model = build_model(norm=layers.BatchNormalization)
+    model = build_model(tf_keras, norm=layers.BatchNormalization)
     print(model.summary())
 
     batch_size = 128
@@ -50,5 +50,5 @@ def test_optimizer(optimizer):
 if __name__ == '__main__':
     print('Schedule Free Adam')
     test_optimizer(
-        AdamScheduleFree(learning_rate=0.03, weight_decay=0.004, warmup_steps=10000)
+        AdamScheduleFree(learning_rate=0.03, weight_decay=0.004, warmup_steps=1000)
     )

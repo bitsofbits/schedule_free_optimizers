@@ -74,7 +74,8 @@ class BaseScheduleFree(optimizers.Optimizer):
             z_t = self.z_t[var_index]
             y = var.numpy()
             beta_x = y - (1 - beta) * z_t
-            new_weights.append((var, beta_x / beta))
+            x = (beta_x / beta).numpy()
+            new_weights.append((var, x))
             old_weights.append((var, y))
         self.set_weights(new_weights)
         return old_weights
@@ -300,8 +301,8 @@ class AdamScheduleFree(BaseScheduleFree):
             **kwargs,
         )
 
-        if isinstance(beta_2, (int, float)) and not 0 <= beta_2 <= 1:
-            raise ValueError('`beta_2` must be between [0, 1].')
+        if isinstance(beta_1, (int, float)) and not 0 <= beta_1 <= 1:
+            raise ValueError('`beta_1` must be between [0, 1].')
         if isinstance(beta_2, (int, float)) and not 0 <= beta_2 <= 1:
             raise ValueError('`beta_2` must be between [0, 1].')
 
