@@ -1,5 +1,5 @@
 import tf_keras
-from fashion_mnist_example import build_model, get_training_data
+from fashion_mnist_example_base import build_model, get_training_data
 from schedule_free_optimizers import AdamScheduleFree
 from tf_keras import layers
 
@@ -10,7 +10,7 @@ input_shape = (28, 28, 1)
 def test_optimizer(optimizer):
     optimizer.exclude_from_weight_decay(var_names=['_wdexclude'])
 
-    x_train, y_train, x_test, y_test = get_training_data(tf_keras)
+    x_train, y_train, x_test, y_test = get_training_data()
 
     model = build_model(tf_keras, norm=layers.BatchNormalization)
     print(model.summary())
@@ -19,7 +19,9 @@ def test_optimizer(optimizer):
     epochs = 20
 
     model.compile(
-        loss="categorical_crossentropy", optimizer=optimizer, metrics=["accuracy"]
+        loss="sparse_categorical_crossentropy",
+        optimizer=optimizer,
+        metrics=["accuracy"],
     )
 
     model.fit(

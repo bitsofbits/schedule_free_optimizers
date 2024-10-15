@@ -28,7 +28,7 @@ class ScheduleFreeCallback(callbacks.Callback):
 
 
 class BaseScheduleFree(optimizers.Optimizer):
-    sf_schedule_weight_exponent = 2.0
+    schedule_weight_exponent = 2.0
 
     def __init__(
         self,
@@ -43,16 +43,16 @@ class BaseScheduleFree(optimizers.Optimizer):
         super().__init__(
             learning_rate=learning_rate, weight_decay=0.0, name=name, **kwargs
         )
-        self.sf_warmup_steps = warmup_steps
+        self.warmup_steps = warmup_steps
         self.sf_weight_decay = weight_decay
-        self.sf_decay_type = decay_type
+        self.decay_type = decay_type
 
     def finalize_weights(self, model):
         old_weights = []
         new_weights = []
         for var in model.trainable_weights:
             y = var.numpy()
-            z = self.sf_z_t[self._get_variable_index(var)].numpy()
+            z = self._zs[self._get_variable_index(var)].numpy()
             beta = self.get_beta()
             x = (y - (1 - beta) * z) / beta
             new_weights.append((var, x))
@@ -67,51 +67,49 @@ class BaseScheduleFree(optimizers.Optimizer):
     def sf_step(self, *, y, z, gradient, c, gamma):
         # y = beta * x + (1 - beta) * z =>
         beta = ops.cast(self.get_beta(), y.dtype)
-        one_minus_beta = ops.subtract(1.0, beta)
         # beta_x = y - (1 - beta) * z
-        beta_x = ops.subtract(y, ops.multiply(one_minus_beta, z))
+        beta_x = ops.subtract(y, ops.multiply(1 - beta, z))
 
         lambda_ = self.get_weight_decay(y)
         scaled_lambda = ops.multiply(gamma, lambda_)
-        if self.sf_decay_type == 'z_at_y':
+        if self.decay_type == 'z_at_y':
             # Default approach suggested in the paper because "equivalent to L2"
             self.assign_sub(z, ops.multiply(scaled_lambda, y))
-        elif self.sf_decay_type == 'z_at_z':
+        elif self.decay_type == 'z_at_z':
             # Alternative approach mentioned in paper
             self.assign_sub(z, ops.multiply(scaled_lambda, z))
         else:
-            raise ValueError(f'unknown value for `decay`: "{self.sf_decay_type}"')
+            raise ValueError(f'unknown value for `decay`: "{self.decay_type}"')
 
         self.assign_sub(z, ops.multiply(gamma, gradient))
         # beta_x = (1 - c) * beta_x + c * beta * z
-        one_minus_c = ops.subtract(1.0, c)
         beta_z = ops.multiply(beta, z)
         beta_x = ops.add(
-            ops.multiply(one_minus_c, beta_x),
+            ops.multiply(1 - c, beta_x),
             ops.multiply(c, beta_z),
         )
         # y <- beta_x + (1 - beta) * z
-        self.assign(y, ops.add(beta_x, ops.multiply(one_minus_beta, z)))
+        self.assign(y, ops.add(beta_x, ops.multiply(1 - beta, z)))
 
-    def get_z_schedule_and_c(self, y):
-        var_index = self._get_variable_index(y)
-        z_t = self.sf_z_t[var_index]
-        self.assign(
-            z_t, ops.cond(ops.equal(self.iterations, 0), lambda: y, lambda: z_t)
-        )
+    def get_z_for(self, y):
+        z = self._zs[self._get_variable_index(y)]
+        self.assign(z, ops.cond(ops.equal(self.iterations, 0), lambda: y, lambda: z))
+        return z
 
+    def get_schedule_and_c(self, y):
         k_plus_1 = ops.cast(ops.add(self.iterations, 1), y.dtype)
-        warmup_steps_plus_1 = ops.cast(ops.add(self.sf_warmup_steps, 1), y.dtype)
+        warmup_steps_plus_1 = ops.cast(ops.add(self.warmup_steps, 1), y.dtype)
         schedule = ops.divide(
             ops.minimum(k_plus_1, warmup_steps_plus_1), warmup_steps_plus_1
         )
 
-        weight = ops.power(schedule, self.sf_schedule_weight_exponent)
-        weight_sum = self.sf_weight_sum[var_index]
+        weight_sum = self._weight_sums[self._get_variable_index(y)]
+        weight = ops.power(schedule, self.schedule_weight_exponent)
+
         self.assign_add(weight_sum, weight)
         c = ops.divide(weight, weight_sum)
 
-        return z_t, schedule, c
+        return schedule, c
 
     def get_weight_decay(self, y):
         if self._use_weight_decay(y):
@@ -123,20 +121,23 @@ class BaseScheduleFree(optimizers.Optimizer):
         if self.built:
             return
         super().build(var_list)
-        self.sf_weight_sum = []
-        self.sf_z_t = []
+        self._weight_sums = []
+        self._zs = []
         for var in var_list:
-            z = self.add_variable_from_reference(reference_variable=var, name='z_t')
-            self.sf_z_t.append(z)
-            self.sf_weight_sum.append(self.add_variable(shape=(), dtype=var.dtype))
+            self._zs.append(
+                self.add_variable_from_reference(reference_variable=var, name='z')
+            )
+            self._weight_sums.append(
+                self.add_variable(shape=(), dtype=var.dtype, name='weight_sum')
+            )
 
     def get_config(self):
         config = super().get_config()
         config.update(
             {
-                'warmup_steps': self.sf_warmup_steps,
+                'warmup_steps': self.warmup_steps,
                 'weight_decay': self.sf_weight_decay,
-                'decay': self.sf_decay,
+                'decay': self.decay,
             }
         )
 
@@ -163,21 +164,22 @@ class SGDScheduleFree(BaseScheduleFree):
         super().__init__(name=name, **kwargs)
         if isinstance(momentum, (int, float)) and not 0 <= momentum <= 1:
             raise ValueError('`momentum` must be between [0, 1].')
-        self.sf_momentum = momentum
+        self.momentum = momentum
 
     def get_beta(self):
-        return self.sf_momentum
+        return self.momentum
 
     def update_step(self, gradient, y, learning_rate):
         """Update variable given gradient"""
-        z, schedule, c = self.get_z_schedule_and_c(y)
+        z = self.get_z_for(y)
+        schedule, c = self.get_schedule_and_c(y)
         learning_rate = ops.cast(learning_rate, y.dtype)
         gamma = ops.multiply(schedule, learning_rate)
         self.sf_step(y=y, z=z, gradient=gradient, c=c, gamma=gamma)
 
     def get_config(self):
         config = super().get_config()
-        config.update({'momentum': self.sf_momentum})
+        config.update({'momentum': self.momentum})
         return config
 
 
@@ -222,63 +224,56 @@ class AdamScheduleFree(BaseScheduleFree):
         if isinstance(beta_2, (int, float)) and not 0 <= beta_2 <= 1:
             raise ValueError('`beta_2` must be between [0, 1].')
 
-        self.sf_beta_1 = beta_1
-        self.sf_beta_2 = beta_2
-        self.sf_epsilon = epsilon
+        self.beta_1 = beta_1
+        self.beta_2 = beta_2
+        self.epsilon = epsilon
 
     def build(self, var_list):
         """Initialize optimizer variables"""
         if self.built:
             return
         super().build(var_list)
-        self.sf_v_t = []
-        self.sf_sum_t = []
-        add_var = self.add_variable_from_reference
+        self._vs = []
         for var in var_list:
-            self.sf_v_t.append(add_var(reference_variable=var, name='v_t'))
-            self.sf_sum_t.append(self.add_variable((), dtype=var.dtype))
+            self._vs.append(
+                self.add_variable_from_reference(reference_variable=var, name='v')
+            )
         self._built = True
 
     def get_beta(self):
-        return self.sf_beta_1
+        return self.beta_1
 
     def update_step(self, gradient, y, learning_rate):
         """Update variable given gradient"""
-        z_t, schedule, c = self.get_z_schedule_and_c(y)
+        z = self.get_z_for(y)
+        schedule, c = self.get_schedule_and_c(y)
 
-        beta_2 = ops.multiply(schedule, ops.cast(self.sf_beta_2, y.dtype))
+        beta_2 = ops.cast(self.beta_2, y.dtype)
         gamma = ops.multiply(schedule, ops.cast(learning_rate, y.dtype))
 
-        sum_t = self.sf_sum_t[self._get_variable_index(y)]
-        v_t = self.sf_v_t[self._get_variable_index(y)]
+        v = self._vs[self._get_variable_index(y)]
 
-        # sum_t <- beta_2 * sum_t + (1 - beta_2)
-        new_sum_t = ops.add(ops.multiply(beta_2, sum_t), ops.subtract(1, beta_2))
-        self.assign(sum_t, new_sum_t)
+        k_plus_1 = ops.cast(ops.add(self.iterations, 1), y.dtype)
+        bias = ops.subtract(1, ops.power(beta_2, k_plus_1))
 
         # v_t <- beta_2 * v_t + (1 - beta_2) * gradient**2)
-        one_minus_beta_2 = ops.subtract(1.0, beta_2)
         grad_squared = ops.power(gradient, 2)
         self.assign(
-            v_t,
-            ops.add(
-                ops.multiply(beta_2, v_t), ops.multiply(one_minus_beta_2, grad_squared)
-            ),
+            v, ops.add(ops.multiply(beta_2, v), ops.multiply(1 - beta_2, grad_squared))
         )
-        # sigma = sqrt(v_t / sum_t + sf_epsilon**2)
-        eps_squared = ops.cast(ops.power(self.sf_epsilon, 2), y.dtype)
-        sigma = ops.sqrt(ops.add(ops.divide(v_t, sum_t), eps_squared))
+        # sigma = sqrt(v_t / sum_t) + epsilon
+        sigma = ops.add(ops.sqrt(ops.divide(v, bias)), self.epsilon)
         normalized_gradient = ops.divide(gradient, sigma)
-        self.sf_step(y=y, z=z_t, gradient=normalized_gradient, c=c, gamma=gamma)
+        self.sf_step(y=y, z=z, gradient=normalized_gradient, c=c, gamma=gamma)
 
     def get_config(self):
         config = super().get_config()
 
         config.update(
             {
-                'beta_1': self.sf_beta_1,
-                'beta_2': self.sf_beta_2,
-                'epsilon': self.sf_epsilon,
+                'beta_1': self.beta_1,
+                'beta_2': self.beta_2,
+                'epsilon': self.epsilon,
             }
         )
         return config

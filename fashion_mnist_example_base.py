@@ -6,6 +6,8 @@ num_classes = 10
 input_shape = (28, 28, 1)
 batch_size = 64
 
+epochs = 10
+
 
 def get_training_data():
     # Load the data and split it between train and test sets
@@ -75,12 +77,11 @@ def test_optimizer(optimizer, keras, callbacks=[]):
     model = build_model(keras)
     print(model.summary())
 
-    epochs = 20
-
     model.compile(
         loss="sparse_categorical_crossentropy",
         optimizer=optimizer,
         metrics=[keras.metrics.SparseCategoricalAccuracy()],
+        jit_compile=True,
     )
 
     model.fit(
@@ -113,6 +114,4 @@ def test_all(keras, schedule_free):
         callbacks=[schedule_free.ScheduleFreeCallback()],
     )
     print("Keras SGD")
-    test_optimizer(
-        keras.optimizers.SGD(learning_rate=0.1, weight_decay=0.004), keras
-    )
+    test_optimizer(keras.optimizers.SGD(learning_rate=0.1, weight_decay=0.004), keras)
