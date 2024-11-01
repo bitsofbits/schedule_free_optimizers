@@ -137,9 +137,10 @@ class BaseScheduleFree(optimizers.Optimizer):
             {
                 'warmup_steps': self.warmup_steps,
                 'weight_decay': self.sf_weight_decay,
-                'decay': self.decay,
+                'decay_type': self.decay_type,
             }
         )
+        return config
 
 
 class SGDScheduleFree(BaseScheduleFree):

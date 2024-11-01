@@ -139,6 +139,7 @@ class BaseScheduleFree(optimizers.Optimizer):
                 'decay': self.decay,
             }
         )
+        return config
 
 
 class SGDScheduleFree(BaseScheduleFree):
