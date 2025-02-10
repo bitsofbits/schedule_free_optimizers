@@ -19,18 +19,13 @@ from keras import callbacks, ops, optimizers
 class ScheduleFreeCallback(callbacks.Callback):
     def on_test_begin(self, logs=None):
         assert self.model is not None
-        self.orig_weights = self.model.optimizer.finalize_weights(self.model)
+        self.orig_weights = self.model.optimizer.replace_y_with_x(
+            self.model.trainable_variables
+        )
 
     def on_test_end(self, logs=None):
         assert self.model is not None
         self.model.optimizer.set_weights(self.orig_weights)
-
-    def on_train_end(self, logs=None):
-        assert self.model is not None
-        self.orig_weights = self.model.optimizer.finalize_weights(self.model)
-
-
-# TODO: look at finalize_variable_values in superclass
 
 
 class BaseScheduleFree(optimizers.Optimizer):
@@ -42,16 +37,17 @@ class BaseScheduleFree(optimizers.Optimizer):
         learning_rate: float = 0.1,
         warmup_steps: int = 0,
         weight_decay: float = 0.0,
-        decay_type: str = "z_at_y",
+        polynomial_average_exponent: float = 0.0,
         name: str = "BaseScheduleFree",
         **kwargs,
     ):
         super().__init__(
             learning_rate=learning_rate, weight_decay=0.0, name=name, **kwargs
         )
+        assert not self.use_ema, "ScheduleFreeOptimizers do not support EMA"
         self.warmup_steps = warmup_steps
+        self.polynomial_average_exponent = polynomial_average_exponent
         self.sf_weight_decay = weight_decay
-        self.decay_type = decay_type
 
     def build(self, var_list):
         if self.built:
@@ -73,19 +69,55 @@ class BaseScheduleFree(optimizers.Optimizer):
         self._schedule = self.add_variable((), dtype="float32")
         self._c = self.add_variable((), dtype="float32")
 
-    def setup_update_steps(self, trainable_variables):
-        schedule, c = self._get_schedule_and_c()
-        self.assign(self._schedule, schedule)
-        self.assign(self._c, c)
+    def setup_update_steps(self, trainable_variables: list):
+        """Do any updates that we want to perform once per call of self.update"""
+
+        # Update _schedule, _weight_sum and _c
+        def initialize():
+            for y in trainable_variables:  # pyright: ignore
+                z = self._zs[self._get_variable_index(y)]
+                self.assign(z, y)
+
+        ops.cond(
+            self._iterations == 0,
+            initialize,
+            lambda: None,
+        )
+
+        k_plus_1 = ops.cast(ops.add(self.iterations, 1), "float32")
+
+        warmup_steps_plus_1 = ops.cast(ops.add(self.warmup_steps, 1), "float32")
+        self.assign(
+            self._schedule,
+            ops.divide(ops.minimum(k_plus_1, warmup_steps_plus_1), warmup_steps_plus_1),
+        )
+
+        weight_sum = self._weight_sum
+        weight = ops.power(k_plus_1, self.polynomial_average_exponent)
+        self.assign_add(weight_sum, weight)
+
+        self.assign(self._c, ops.divide(weight, weight_sum))
 
     def _backend_apply_gradients(self, grads, trainable_variables):
+        # Override to inject `setup_update_steps`which allows us to
+        # update global values before starting per weight updates.
         self.setup_update_steps(trainable_variables)
         super()._backend_apply_gradients(grads, trainable_variables)
 
-    def finalize_weights(self, model):
+    def finalize_variable_values(self, var_list):
+        self.replace_y_with_x(var_list)
+
+    def replace_y_with_x(self, var_list):
+        """Replace y-weights with more accurate x-weights
+
+        Schedule free optimizers use `y` weights during
+        optimization, but the actual target weights are
+        `x`, so at the end of training, or when computing
+        metrics, replace 'y' with 'x'
+        """
         old_weights = []
         new_weights = []
-        for var in model.trainable_weights:
+        for var in var_list:
             y = var.numpy()
             z = self._zs[self._get_variable_index(var)].numpy()
             beta = self.get_beta()
@@ -103,56 +135,20 @@ class BaseScheduleFree(optimizers.Optimizer):
         raise NotImplementedError()
 
     def sf_step(self, *, y, z, gradient, c, gamma):
-        # y = beta * x + (1 - beta) * z =>
-        beta = ops.cast(self.get_beta(), y.dtype)
-        # beta_x = y - (1 - beta) * z
-        beta_x = ops.subtract(y, ops.multiply(ops.subtract(1, beta), z))
-
         lambda_ = self.get_weight_decay(y)
-        scaled_lambda = ops.multiply(gamma, lambda_)
-        if self.decay_type == "z_at_y":
-            # Default approach suggested in the paper because "equivalent to L2"
-            self.assign_sub(z, ops.multiply(scaled_lambda, y))
-        elif self.decay_type == "z_at_z":
-            assert False
-            # Alternative approach mentioned in paper
-            self.assign_sub(z, ops.multiply(scaled_lambda, z))
-        else:
-            raise ValueError(f'unknown value for `decay`: "{self.decay_type}"')
+        if lambda_ is not None:
+            gradient = gradient + lambda_ * y
 
-        self.assign_sub(z, ops.multiply(gamma, gradient))
-        # beta_x = (1 - c) * beta_x + c * beta * z
-        beta_z = ops.multiply(beta, z)
-        beta_x = ops.add(
-            ops.multiply(1 - c, beta_x),
-            ops.multiply(c, beta_z),
-        )
-        # y <- beta_x + (1 - beta) * z
-        self.assign(y, ops.add(beta_x, ops.multiply(ops.subtract(1, beta), z)))
-
-    def _get_schedule_and_c(self):
-        k_plus_1 = ops.cast(ops.add(self.iterations, 1), "float32")
-        warmup_steps_plus_1 = ops.cast(ops.add(self.warmup_steps, 1), "float32")
-        schedule = ops.divide(
-            ops.minimum(k_plus_1, warmup_steps_plus_1), warmup_steps_plus_1
-        )
-
-        weight_sum = self._weight_sum
-        weight = ops.power(schedule, self.schedule_weight_exponent)
-
-        self.assign_add(weight_sum, weight)
-        c = ops.divide(weight, weight_sum)
-
-        return schedule, c
-
-    def get_schedule_and_c(self, y):
-        return ops.cast(self._schedule, y.dtype), ops.cast(self._c, y.dtype)
+        beta = ops.cast(self.get_beta(), y.dtype)
+        # This is based on the the PyTorch implementation from the paper
+        self.assign_add(y, c * (z - y) + gamma * (beta * (1 - c) - 1) * gradient)
+        self.assign_sub(z, gamma * gradient)
 
     def get_weight_decay(self, y):
         if self._use_weight_decay(y):
             return ops.cast(self.sf_weight_decay, y.dtype)
         else:
-            return 0.0
+            return None
 
     def get_config(self):
         config = super().get_config()
@@ -160,7 +156,7 @@ class BaseScheduleFree(optimizers.Optimizer):
             {
                 "warmup_steps": self.warmup_steps,
                 "weight_decay": self.sf_weight_decay,
-                "decay_type": self.decay_type,
+                "polynomial_average_exponent": self.polynomial_average_exponent,
             }
         )
         return config
@@ -196,7 +192,8 @@ class SGDScheduleFree(BaseScheduleFree):
     def update_step(self, gradient, y, learning_rate):
         """Update variable given gradient"""
         z = self._zs[self._get_variable_index(y)]
-        schedule, c = self.get_schedule_and_c(y)
+        schedule = ops.cast(self._schedule, y.dtype)
+        c = ops.cast(self._c, y.dtype)
         learning_rate = ops.cast(learning_rate, y.dtype)
         gamma = ops.multiply(schedule, learning_rate)
         self.sf_step(y=y, z=z, gradient=gradient, c=c, gamma=gamma)
@@ -264,52 +261,29 @@ class AdamScheduleFree(BaseScheduleFree):
             )
         self._built = True
 
-    def setup_update_steps(self, trainable_variables):
-        def initialize():
-            for y in trainable_variables:  # pyright: ignore
-                z = self._zs[self._get_variable_index(y)]
-                self.assign(z, y)
-
-        ops.cond(
-            self._iterations == 0,
-            initialize,
-            lambda: None,
-        )
-        super().setup_update_steps(trainable_variables=trainable_variables)
-
     def get_beta(self):
         return self.beta_1
 
     def update_step(self, gradient, y, learning_rate):
         """Update variable given gradient"""
-        z = self._zs[self._get_variable_index(y)]
-        schedule, c = self.get_schedule_and_c(y)
-
-        assert 0 < self.beta_2 <= 1
+        ndx = self._get_variable_index(y)
+        z = self._zs[ndx]
+        v = self._vs[ndx]
+        schedule = ops.cast(self._schedule, y.dtype)
+        c = ops.cast(self._c, y.dtype)
 
         beta_2 = ops.cast(self.beta_2, y.dtype)
         gamma = ops.multiply(schedule, ops.cast(learning_rate, y.dtype))
 
-        v = self._vs[self._get_variable_index(y)]
+        k_plus_1 = ops.cast(self.iterations + 1, y.dtype)  # pyright:ignore
+        bias_correction2 = 1 - beta_2**k_plus_1  # pyright:ignore
 
-        k_plus_1 = ops.cast(ops.add(self.iterations, 1), y.dtype)
-        bias = ops.subtract(1, ops.power(beta_2, k_plus_1))
-
-        gamma = ops.multiply(ops.sqrt(bias), gamma)
-
-        # v_t <- beta_2 * v_t + (1 - beta_2) * gradient**2)
-        grad_squared = ops.square(gradient)
-        self.assign(
+        self.assign_add(
             v,
-            ops.add(
-                ops.multiply(beta_2, v),
-                ops.multiply(ops.subtract(1, beta_2), grad_squared),
-            ),
+            (1 - beta_2) * (ops.square(gradient) - v),  # pyright:ignore
         )
-        # sigma = sqrt(v_t / sum_t) + epsilon
-        sigma = ops.add(ops.sqrt(v), self.epsilon)
-        normalized_gradient = ops.divide(gradient, sigma)
-        self.sf_step(y=y, z=z, gradient=normalized_gradient, c=c, gamma=gamma)
+        scale = ops.sqrt(bias_correction2 / (v + self.epsilon**2))  # pyright:ignore
+        self.sf_step(y=y, z=z, gradient=scale * gradient, c=c, gamma=gamma)
 
     def get_config(self):
         config = super().get_config()

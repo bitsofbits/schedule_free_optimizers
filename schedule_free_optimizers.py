@@ -15,22 +15,23 @@
 from typing import Optional
 
 import tensorflow as tf
-from tf_keras import callbacks, optimizers
+from tf_keras import callbacks, optimizers  # pyright: ignore
 
 
 class ScheduleFreeCallback(callbacks.Callback):
     def on_test_begin(self, logs=None):
-        self.orig_weights = self.model.optimizer.finalize_weights(self.model)
+        assert self.model is not None
+        self.orig_weights = self.model.optimizer.replace_y_with_x(
+            self.model.trainable_variables
+        )
 
     def on_test_end(self, logs=None):
+        assert self.model is not None
         self.model.optimizer.set_weights(self.orig_weights)
-
-    def on_train_end(self, logs=None):
-        self.orig_weights = self.model.optimizer.finalize_weights(self.model)
 
 
 class BaseScheduleFree(optimizers.Optimizer):
-    schedule_weight_exponent = 2.0
+    polynomial_average_exponent: float = 0.0
 
     def __init__(
         self,
@@ -45,8 +46,8 @@ class BaseScheduleFree(optimizers.Optimizer):
         ema_momentum: float = 0.99,
         ema_overwrite_frequency: Optional[int] = None,
         jit_compile: bool = True,
-        decay: str = 'z_at_y',
-        name: str = 'BaseScheduleFree',
+        decay: str = "z_at_y",
+        name: str = "BaseScheduleFree",
         **kwargs,
     ):
         super().__init__(
@@ -65,16 +66,24 @@ class BaseScheduleFree(optimizers.Optimizer):
         self.warmup_steps = warmup_steps
         self.decay = decay
 
-    def finalize_weights(self, model):
+    def finalize_variable_values(self, var_list):
+        self.replace_y_with_x(var_list)
+
+    def replace_y_with_x(self, var_list):
+        """Replace y-weights with more accurate x-weights
+
+        Schedule free optimizers use `y` weights during
+        optimization, but the actual target weights are
+        `x`, so at the end of training, or when computing
+        metrics, replace 'y' with 'x'
+        """
         old_weights = []
         new_weights = []
-        for var in model.trainable_weights:
-            beta = self.get_beta()
-            var_index = self._index_dict[self._var_key(var)]
-            z_t = self.z_t[var_index]
+        for var in var_list:
             y = var.numpy()
-            beta_x = y - (1 - beta) * z_t
-            x = (beta_x / beta).numpy()
+            z = self._zs[self._index_dict[self._var_key(var)]].numpy()
+            beta = self.get_beta()
+            x = (y - (1 - beta) * z) / beta
             new_weights.append((var, x))
             old_weights.append((var, y))
         self.set_weights(new_weights)
@@ -87,12 +96,12 @@ class BaseScheduleFree(optimizers.Optimizer):
     def _step_dense(self, *, y, z, gradient, c, gamma, lambda_):
         # y = beta * x + (1 - beta) * z =>
         beta = tf.cast(self.get_beta(), y.dtype)
-        beta_x = y - (1 - beta) * z
+        beta_x = y - (1 - beta) * z  # pyright: ignore
 
-        if self.decay == 'z_at_y':
+        if self.decay == "z_at_y":
             # Default approach suggested in the paper because "equivalent to L2"
             z.assign_sub(gamma * lambda_ * y)
-        elif self.decay == 'z_at_z':
+        elif self.decay == "z_at_z":
             # Alternative approach mentioned in paper
             z.assign_sub(gamma * lambda_ * z)
         else:
@@ -100,7 +109,7 @@ class BaseScheduleFree(optimizers.Optimizer):
 
         z.assign_sub(gamma * gradient)
         beta_x = (1 - c) * beta_x + c * beta * z
-        y.assign(beta_x + (1 - beta) * z)
+        y.assign(beta_x + (1 - beta) * z)  # pyright: ignore
 
     def _compute_schedule_and_c(self, y):
         var_index = self._index_dict[self._var_key(y)]
@@ -109,7 +118,7 @@ class BaseScheduleFree(optimizers.Optimizer):
         warmup_steps_plus_1 = tf.cast(self.warmup_steps + 1, dtype)
         schedule = tf.minimum(k_plus_1, warmup_steps_plus_1) / warmup_steps_plus_1
 
-        weight = schedule**self.schedule_weight_exponent
+        weight = k_plus_1**self.polynomial_average_exponent  # pyright: ignore
         weight_sum = self.weight_sum[var_index]
         weight_sum.assign_add(weight)
         c = weight / weight_sum
@@ -123,20 +132,27 @@ class BaseScheduleFree(optimizers.Optimizer):
             return 0.0
 
     def build(self, var_list):
-        super().build(var_list)
-        if hasattr(self, '_built') and self._built:
+        if hasattr(self, "_built") and self._built:
             return
+        super().build(var_list)
+        # TODO: make names consistent with keras 3 version
+        self._zs = self.z_t = []
         self.weight_sum = []
+        add_var = self.add_variable_from_reference
         for var in var_list:
             self.weight_sum.append(self.add_variable((), dtype=var.dtype))
+            self.z_t.append(
+                add_var(model_variable=var, variable_name="z_t", initial_value=var)
+            )
+        self._built = True
 
     def get_config(self):
         config = super().get_config()
         config.update(
             {
-                'warmup_steps': self.warmup_steps,
-                'weight_decay': self.sf_weight_decay,
-                'decay': self.decay,
+                "warmup_steps": self.warmup_steps,
+                "weight_decay": self.sf_weight_decay,
+                "decay": self.decay,
             }
         )
         return config
@@ -171,7 +187,7 @@ class SGDScheduleFree(BaseScheduleFree):
         ema_momentum: float = 0.99,
         ema_overwrite_frequency: Optional[int] = None,
         jit_compile: bool = True,
-        name: str = 'SGDScheduleFree',
+        name: str = "SGDScheduleFree",
         **kwargs,
     ):
         super().__init__(
@@ -189,24 +205,10 @@ class SGDScheduleFree(BaseScheduleFree):
         )
 
         if isinstance(momentum, (int, float)) and not 0 <= momentum <= 1:
-            raise ValueError('`momentum` must be between [0, 1].')
+            raise ValueError("`momentum` must be between [0, 1].")
 
         self._learning_rate = self._build_learning_rate(learning_rate)
         self.momentum = momentum
-
-    def build(self, var_list):
-        """Initialize optimizer variables"""
-
-        super().build(var_list)
-        if hasattr(self, '_built') and self._built:
-            return
-        self.z_t = []
-        add_var = self.add_variable_from_reference
-        for var in var_list:
-            self.z_t.append(
-                add_var(model_variable=var, variable_name='z_t', initial_value=var)
-            )
-        self._built = True
 
     def get_beta(self):
         return self.momentum
@@ -238,8 +240,8 @@ class SGDScheduleFree(BaseScheduleFree):
 
         config.update(
             {
-                'learning_rate': self._serialize_hyperparameter(self._learning_rate),
-                'momentum': self.momentum,
+                "learning_rate": self._serialize_hyperparameter(self._learning_rate),
+                "momentum": self.momentum,
             }
         )
         return config
@@ -285,7 +287,7 @@ class AdamScheduleFree(BaseScheduleFree):
         ema_momentum: float = 0.99,
         ema_overwrite_frequency: Optional[int] = None,
         jit_compile: bool = True,
-        name: str = 'AdamScheduleFree',
+        name: str = "AdamScheduleFree",
         **kwargs,
     ):
         super().__init__(
@@ -303,9 +305,9 @@ class AdamScheduleFree(BaseScheduleFree):
         )
 
         if isinstance(beta_1, (int, float)) and not 0 <= beta_1 <= 1:
-            raise ValueError('`beta_1` must be between [0, 1].')
+            raise ValueError("`beta_1` must be between [0, 1].")
         if isinstance(beta_2, (int, float)) and not 0 <= beta_2 <= 1:
-            raise ValueError('`beta_2` must be between [0, 1].')
+            raise ValueError("`beta_2` must be between [0, 1].")
 
         self._learning_rate = self._build_learning_rate(learning_rate)
         self.beta_1 = beta_1
@@ -315,18 +317,14 @@ class AdamScheduleFree(BaseScheduleFree):
 
     def build(self, var_list):
         """Initialize optimizer variables"""
-        super().build(var_list)
-        if hasattr(self, '_built') and self._built:
+        if hasattr(self, "_built") and self._built:
             return
-        self.z_t = []
+        super().build(var_list)
         self.v_t = []
         self.sum_t = []
         add_var = self.add_variable_from_reference
         for var in var_list:
-            self.z_t.append(
-                add_var(model_variable=var, variable_name='z_t', initial_value=var)
-            )
-            self.v_t.append(add_var(model_variable=var, variable_name='v_t'))
+            self.v_t.append(add_var(model_variable=var, variable_name="v_t"))
             self.sum_t.append(self.add_variable((), dtype=var.dtype))
         self._built = True
 
@@ -370,10 +368,10 @@ class AdamScheduleFree(BaseScheduleFree):
 
         config.update(
             {
-                'learning_rate': self._serialize_hyperparameter(self._learning_rate),
-                'beta_1': self.beta_1,
-                'beta_2': self.beta_2,
-                'epsilon': self.epsilon,
+                "learning_rate": self._serialize_hyperparameter(self._learning_rate),
+                "beta_1": self.beta_1,
+                "beta_2": self.beta_2,
+                "epsilon": self.epsilon,
             }
         )
         return config
